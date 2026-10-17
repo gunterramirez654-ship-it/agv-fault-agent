@@ -117,6 +117,25 @@ DEFAULT_COOLDOWN = 6.0       # 两次触发之间的最小间隔（秒）
 WARMUP_SECONDS = 2.0         # 启动后等待时间，避免一上来就触发
 HYSTERESIS = 0.30            # 边界滞回带（米）：离分界线过近时保持原区域，避免抖动
 
+# 区域可视化（在 3D 场景里画出四个区域，否则观众看不到"区域"在哪）
+ZONE_HALF = 2.45            # 地面半宽（米），略小于 2.5 避免压到墙面
+ZONE_LINE_Z = 0.015         # 画线离地高度，避免与地面 z-fighting
+ZONE_LINE_COLOR = [0.35, 0.42, 0.55]   # 静态边界线颜色（暗蓝灰）
+HIGHLIGHT_COLORS = {        # 区域高亮色（按风险）
+    "idle": [0.45, 0.50, 0.60],
+    "高风险": [1.00, 0.25, 0.25],
+    "中风险": [1.00, 0.75, 0.20],
+    "低风险": [0.25, 0.85, 0.40],
+}
+
+# 各区域在象限内的角标（用于计算高亮框）
+ZONE_CORNER = {
+    "region_RAN": (0, 0),      # x+, y+
+    "region_RAZ": (-1, 0),     # x-, y+
+    "region_RDA": (-1, -1),    # x-, y-
+    "region_RAB": (0, -1),     # x+, y-
+}
+
 # 区域判定：以原点为中心划分四个象限（与场景的物理布局一致）
 # 键为 area_id，值为 (x 判断函数, y 判断函数)
 ZONE_RULES: List[Tuple[str, str]] = [
@@ -133,6 +152,76 @@ RISK_COLORS: Dict[str, List[float]] = {
     "低风险": [0.20, 0.85, 0.35],
 }
 IDLE_COLOR = [0.70, 0.70, 0.70]
+
+
+def setup_zone_overlay(sim: Any) -> List[Any]:
+    """在 3D 场景中画出四个区域的边界，并为每种风险色预建一个高亮框。
+
+    为什么需要：区域判定是基于世界坐标象限的纯数学划分，3D 里本来什么都看不见。
+    不画出来的话，观众无法理解"AGV 进入了装载区"这个判断从何而来。
+
+    为什么每种颜色单独建对象：CoppeliaSim 的绘图对象在创建时固定颜色，
+    没有可靠的运行时改色接口。与其冒险调用不存在的 API，不如按颜色各建一个，
+    每次只往目标对象里画、把其它清空。
+
+    返回：
+        绘图对象列表：[静态边界, 高亮_idle, 高亮_high, 高亮_mid, 高亮_low]
+    """
+    S = ZONE_HALF
+    Z = ZONE_LINE_Z
+    handles: List[Any] = []
+
+    # ---- 静态边界：外框 + 中轴线 ----
+    static = sim.addDrawingObject(
+        sim.drawing_lines, 2, 0.0, -1, 200, ZONE_LINE_COLOR)
+    for seg in (
+        [-S, -S, Z,  S, -S, Z],   # 下边
+        [ S, -S, Z,  S,  S, Z],   # 右边
+        [ S,  S, Z, -S,  S, Z],   # 上边
+        [-S,  S, Z, -S, -S, Z],   # 左边
+        [-S,  0, Z,  S,  0, Z],   # 中轴 y=0
+        [ 0, -S, Z,  0,  S, Z],   # 中轴 x=0
+    ):
+        sim.addDrawingObjectItem(static, seg)
+    handles.append(static)
+
+    # ---- 按颜色预建高亮框 ----
+    for key in ("idle", "高风险", "中风险", "低风险"):
+        h = sim.addDrawingObject(
+            sim.drawing_lines, 5, 0.0, -1, 20, HIGHLIGHT_COLORS[key])
+        handles.append(h)
+
+    return handles
+
+
+def draw_zone_highlight(sim: Any, handles: List[Any], area_id: str,
+                        color_key: str = "idle") -> None:
+    """把指定区域用彩色框高亮（清空其它颜色的框）。"""
+    if not handles or len(handles) < 5 or not area_id:
+        return
+    order = ["idle", "高风险", "中风险", "低风险"]
+    try:
+        # 清空全部高亮框
+        for h in handles[1:]:
+            sim.addDrawingObjectItem(h, None)
+
+        target = handles[1 + (order.index(color_key)
+                              if color_key in order else 0)]
+
+        S = ZONE_HALF
+        Z = ZONE_LINE_Z
+        cx, cy = ZONE_CORNER.get(area_id, (0, 0))
+        x0, x1 = cx * S, (cx + 1) * S
+        y0, y1 = cy * S, (cy + 1) * S
+        for seg in (
+            [x0, y0, Z, x1, y0, Z],
+            [x1, y0, Z, x1, y1, Z],
+            [x1, y1, Z, x0, y1, Z],
+            [x0, y1, Z, x0, y0, Z],
+        ):
+            sim.addDrawingObjectItem(target, seg)
+    except Exception:  # noqa: BLE001  绘图失败不应影响主流程
+        pass
 
 
 def detect_zone(x: float, y: float, prev: Optional[str] = None) -> Tuple[str, str]:
@@ -285,6 +374,20 @@ def main() -> int:
     print(f"  ✅ 已定位机器人：{args.robot}")
     print(f"     当前位置：{sim.getObjectPosition(robot, -1)}")
 
+    # ---- 在场景中画出四个区域（否则观众看不到"区域"在哪）----
+    overlay = setup_zone_overlay(sim)
+    print("  ✅ 已在场景中绘制区域边界")
+    print()
+    print("     区域分布（俯视，地面 5m × 5m）：")
+    print("       ┌──────────────┬──────────────┐")
+    print("       │  缓存区 RAZ   │  装载区 RAN   │   y > 0")
+    print("       │  x<0, y>0    │  x>0, y>0    │")
+    print("       ├──────────────┼──────────────┤")
+    print("       │  充电区 RDA   │  避让区 RAB   │   y < 0")
+    print("       │  x<0, y<0    │  x>0, y<0    │")
+    print("       └──────────────┴──────────────┘")
+    print("            x < 0           x > 0")
+
     # ---- 4) 启动仿真并进入监听循环 ----
     print(f"\n[3/4] 启动仿真（轮询 {POLL_HZ}Hz，触发冷却 {args.cooldown}s）")
     sim.startSimulation()
@@ -350,6 +453,10 @@ def main() -> int:
                 print(f"  {elapsed:6.1f}s  ({x:7.3f},{y:7.3f})  {area_name:<8}  "
                       f"（冷却中，跳过）")
 
+            # 区域切换时在场景中高亮当前区域（灰色待定）
+            if zone_changed:
+                draw_zone_highlight(sim, overlay, area_id, "idle")
+
             # ---------- 颜色恢复（仅主线程操作 sim）----------
             if restore_color_at is not None and now >= restore_color_at:
                 try:
@@ -382,6 +489,8 @@ def main() -> int:
                     sim.setShapeColor(body, None,
                                       sim.colorcomponent_ambient_diffuse,
                                       make_color(color))
+                    # 回写 2：区域高亮成风险色（观众一眼看到"哪个区出了问题"）
+                    draw_zone_highlight(sim, overlay, job.get("area_id", ""), risk)
                     # 回写 2：控制台日志
                     sim.addLog(
                         sim.verbosity_scriptinfos,
@@ -414,6 +523,8 @@ def main() -> int:
             ("恢复颜色", lambda: sim.setShapeColor(
                 body, None, sim.colorcomponent_ambient_diffuse,
                 make_color(original_color))),
+            ("清除区域绘制", lambda: [sim.removeDrawingObject(h)
+                                      for h in overlay if h is not None]),
         ):
             try:
                 fn()
