@@ -10,6 +10,7 @@
 #   ./run.sh doctor      环境自检（出问题先跑这个）
 #   ./run.sh test        命令行全链路测试
 #   ./run.sh web         启动 2D 可视化服务（http://127.0.0.1:8000）
+#   ./run.sh scene       生成 CoppeliaSim 演示场景（3 台 AGV + 6 个障碍物）
 #   ./run.sh bridge      启动 CoppeliaSim 3D 桥接（可追加参数）
 #   ./run.sh sim         事件流仿真（若已安装）
 #
@@ -43,6 +44,9 @@ case "$CMD" in
     web)
         exec "$PY" web_demo.py "$@"
         ;;
+    scene)
+        exec "$PY" prepare_scene.py "$@"
+        ;;
     bridge)
         exec "$PY" coppelia_bridge.py "$@"
         ;;
@@ -54,12 +58,13 @@ case "$CMD" in
         exec "$PY" fleet_sim.py "$@"
         ;;
     *)
-        echo "用法：./run.sh {doctor|test|web|bridge|sim} [参数...]"
+        echo "用法：./run.sh {doctor|test|web|scene|bridge|sim} [参数...]"
         echo
         echo "  doctor   环境自检（出问题先跑这个）"
         echo "  test     命令行全链路测试"
         echo "  web      启动 2D 可视化服务  → http://127.0.0.1:8000"
-        echo "  bridge   启动 CoppeliaSim 桥接"
+        echo "  scene    生成 CoppeliaSim 演示场景（3 台 AGV + 障碍物）"
+        echo "  bridge   启动 CoppeliaSim 桥接（需先运行 scene 并打开场景）"
         echo "  sim      事件流仿真"
         echo
         echo "示例：./run.sh bridge --duration 60"

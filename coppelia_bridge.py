@@ -224,6 +224,56 @@ def draw_zone_highlight(sim: Any, handles: List[Any], area_id: str,
         pass
 
 
+def find_robot(sim: Any, preferred: str) -> Tuple[Any, str]:
+    """定位要跟踪的机器人对象。
+
+    优先用指定路径；找不到时自动扫描场景里带两个以上关节的对象
+    （差分驱动 / 移动机器人的典型特征），避免因为对象改名而跑不起来。
+
+    参数：
+        sim       : CoppeliaSim 的 sim 模块
+        preferred : 用户指定的对象路径
+
+    返回：
+        (对象句柄, 别名)；找不到时抛 RuntimeError
+    """
+    # ---- 优先用指定路径 ----
+    try:
+        h = sim.getObject(preferred)
+        return h, sim.getObjectAlias(h, 1)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ---- 自动扫描 ----
+    candidates: List[Tuple[Any, str, int]] = []
+    for h in sim.getObjectsInTree(sim.handle_scene):
+        try:
+            kids = sim.getObjectsInTree(h)
+            joints = sum(1 for k in kids if sim.getObjectType(k) == 1)
+            if joints < 2:
+                continue
+            alias = sim.getObjectAlias(h, 1)
+            # 排除机械臂：移动机器人通常关节少（2~4 个），机械臂是 6~7 个
+            if joints <= 4:
+                candidates.append((h, alias, joints))
+        except Exception:
+            continue
+
+    if not candidates:
+        raise RuntimeError(
+            f"场景中找不到可跟踪的移动机器人（指定路径 {preferred!r} 也不存在）。\n"
+            f"          可用 --robot 指定，或先运行 ./run.sh scene 生成演示场景。")
+
+    # 命名优先：AGV / dr12 / Pioneer / ePuck 等
+    for kw in ("AGV", "agv", "dr12", "Pioneer", "ePuck", "Robot"):
+        for h, alias, _ in candidates:
+            if kw in alias:
+                return h, alias
+
+    h, alias, _ = candidates[0]
+    return h, alias
+
+
 def detect_zone(x: float, y: float, prev: Optional[str] = None) -> Tuple[str, str]:
     """根据坐标判定 AGV 所在区域，返回 (area_id, 中文名)。
 
@@ -361,17 +411,24 @@ def main() -> int:
         print("          请确认 CoppeliaSim 已启动且 ZMQ Remote API 在运行。")
         return 1
 
-    # ---- 3) 定位机器人 ----
+    # ---- 3) 定位机器人（自动识别，避免因对象改名而失败）----
     try:
-        robot = sim.getObject(args.robot)
-        body = sim.getObject(args.robot + "/body")
-    except Exception as exc:  # noqa: BLE001
-        print(f"  [FATAL] 找不到机器人对象 {args.robot!r}：{exc}")
-        print("          可用 --robot 指定其它对象路径。")
+        robot, robot_alias = find_robot(sim, args.robot)
+    except RuntimeError as exc:
+        print(f"  [FATAL] {exc}")
         return 1
 
+    if robot_alias != args.robot:
+        print(f"  ℹ️  指定的 {args.robot!r} 不存在，自动选用 {robot_alias!r}")
+    print(f"  ✅ 跟踪对象：{robot_alias}")
+
+    # body 子对象用于变色；找不到就用根对象
+    try:
+        body = sim.getObject(robot_alias + "/body")
+    except Exception:  # noqa: BLE001
+        body = robot
+
     original_color = sim.getShapeColor(body, None, sim.colorcomponent_ambient_diffuse)
-    print(f"  ✅ 已定位机器人：{args.robot}")
     print(f"     当前位置：{sim.getObjectPosition(robot, -1)}")
 
     # ---- 在场景中画出四个区域（否则观众看不到"区域"在哪）----
