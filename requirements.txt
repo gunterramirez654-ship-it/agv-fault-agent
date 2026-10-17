@@ -17,6 +17,9 @@ openai>=1.30                # DeepSeek 兼容 OpenAI SDK
 # ---- 配置 ----
 python-dotenv>=1.0          # 读取 .env
 
+# ---- 运营仿真（可选，仅 fleet_sim.py 需要）----
+simpy>=4.0                  # 离散事件仿真引擎（纯 Python，约 30KB）
+
 # ============================================================================
 # 说明：
 #   1. 本项目的 Web 演示服务（web_demo.py）仅使用 Python 标准库 http.server，
