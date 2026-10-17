@@ -1,0 +1,114 @@
+[
+  {
+    "fault_id": "fault_RAN_001",
+    "fault_desc": "AGV在装载区视觉相机误识别货架轮廓，发生幻视并误判货物位置",
+    "area_id": "region_RAN",
+    "risk_level": "高风险",
+    "action": "AGV立即暂停，人工复核视觉识别结果并确认现场"
+  },
+  {
+    "fault_id": "fault_RAN_002",
+    "fault_desc": "装载区AGV里程计数值跳变，定位坐标漂移超出允许范围",
+    "area_id": "region_RAN",
+    "risk_level": "高风险",
+    "action": "AGV立即暂停，重新标定里程计后复位运行"
+  },
+  {
+    "fault_id": "fault_RAN_003",
+    "fault_desc": "装载区二维码导航丢失，AGV无法识别地面定位码导致停位偏差",
+    "area_id": "region_RAN",
+    "risk_level": "中风险",
+    "action": "AGV减速停止，人工检查地面二维码完整性与清洁度"
+  },
+  {
+    "fault_id": "fault_RAN_004",
+    "fault_desc": "装载区AGV举升驱动电机过载，电流持续超过额定值触发报警",
+    "area_id": "region_RAN",
+    "risk_level": "高风险",
+    "action": "AGV立即暂停作业，检查举升机构负载与电机状态"
+  },
+  {
+    "fault_id": "fault_RAZ_001",
+    "fault_desc": "缓存区地面反光导致激光雷达误判障碍物，AGV频繁触发性停车",
+    "area_id": "region_RAZ",
+    "risk_level": "中风险",
+    "action": "AGV减速通过，人工复核激光雷达点云数据"
+  },
+  {
+    "fault_id": "fault_RAZ_002",
+    "fault_desc": "缓存区WiFi通讯丢包，AGV与调度系统心跳中断超过5秒",
+    "area_id": "region_RAZ",
+    "risk_level": "高风险",
+    "action": "AGV立即暂停，等待通讯恢复后由调度确认续行"
+  },
+  {
+    "fault_id": "fault_RAZ_003",
+    "fault_desc": "缓存区AGV触发急停锁止，无法自动复位解除",
+    "area_id": "region_RAZ",
+    "risk_level": "高风险",
+    "action": "保持锁止状态，人工现场排查后手动复位"
+  },
+  {
+    "fault_id": "fault_RAZ_004",
+    "fault_desc": "缓存区编码器打滑，AGV轮速反馈与实际位移不一致",
+    "area_id": "region_RAZ",
+    "risk_level": "中风险",
+    "action": "AGV减速停车，检查编码器安装紧固与驱动轮面状况"
+  },
+  {
+    "fault_id": "fault_RDA_001",
+    "fault_desc": "充电区AGV电池高温报警，电池组温度超过安全阈值",
+    "area_id": "region_RDA",
+    "risk_level": "高风险",
+    "action": "AGV立即停止充电并撤离充电位，人工检查电池散热"
+  },
+  {
+    "fault_id": "fault_RDA_002",
+    "fault_desc": "充电区充电枪接触不良，对接后充电电流异常中断",
+    "area_id": "region_RDA",
+    "risk_level": "中风险",
+    "action": "AGV退出充电位，人工检查充电枪触点磨损与氧化情况"
+  },
+  {
+    "fault_id": "fault_RDA_003",
+    "fault_desc": "充电区BMS电池管理系统断连，电池状态数据停止上报",
+    "area_id": "region_RDA",
+    "risk_level": "高风险",
+    "action": "AGV立即暂停充电，人工检查BMS通讯线束与接插件"
+  },
+  {
+    "fault_id": "fault_RDA_004",
+    "fault_desc": "充电区安全触边被充电桩外围栏触发，AGV停止运行",
+    "area_id": "region_RDA",
+    "risk_level": "中风险",
+    "action": "确认无障碍物后人工复位安全触边并恢复作业"
+  },
+  {
+    "fault_id": "fault_RAB_001",
+    "fault_desc": "避让区激光雷达检测到前方障碍物，AGV减速后停车避让",
+    "area_id": "region_RAB",
+    "risk_level": "低风险",
+    "action": "AGV减速绕行，持续监测障碍物状态"
+  },
+  {
+    "fault_id": "fault_RAB_002",
+    "fault_desc": "避让区安全触边触发，AGV接触柔性障碍物后紧急停止",
+    "area_id": "region_RAB",
+    "risk_level": "中风险",
+    "action": "人工确认无障碍物后复位安全触边，恢复作业"
+  },
+  {
+    "fault_id": "fault_RAB_003",
+    "fault_desc": "避让区检测到行人横穿通道，AGV主动停车等待行人通过",
+    "area_id": "region_RAB",
+    "risk_level": "低风险",
+    "action": "保持停车等待，行人离开通道后自动恢复行驶"
+  },
+  {
+    "fault_id": "fault_RAB_004",
+    "fault_desc": "避让区地面反光误判导致AGV偏离规划路径，需重新规划路线",
+    "area_id": "region_RAB",
+    "risk_level": "中风险",
+    "action": "AGV暂停后重新规划路径，并复核激光雷达参数"
+  }
+]

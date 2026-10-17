@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AGV 故障智能分析系统 · V1 POC</title>
+<style>
+  /* ===================== 主题变量 ===================== */
+  :root {
+    --bg:        #0b0e14;
+    --panel:     #131820;
+    --panel-2:   #0f141b;
+    --border:    #1f2630;
+    --text:      #c9d1d9;
+    --muted:     #7d8590;
+    --accent:    #58a6ff;
+    --high:      #f85149;
+    --mid:       #d29922;
+    --low:       #3fb950;
+    --zone:      #161c25;
+    --zone-line: #2a3340;
+    --mono:      "SF Mono", "Menlo", "Consolas", monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ===================== 顶栏 ===================== */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 18px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  .brand h1 { font-size: 16px; font-weight: 600; letter-spacing: .3px; }
+  .brand .tag {
+    font-size: 11px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 3px;
+    padding: 1px 6px;
+  }
+  .stats { display: flex; gap: 18px; font-size: 12px; color: var(--muted); }
+  .stats b { color: var(--text); font-weight: 600; }
+  .dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--low); margin-right: 5px;
+    box-shadow: 0 0 6px var(--low);
+  }
+
+  /* ===================== 主体布局 ===================== */
+  /* 关键：左栏固定封顶 420px，右栏自适应占满剩余空间 */
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(300px, 420px) minmax(0, 1fr);
+    gap: 12px;
+    padding: 12px 12px 0;
+    min-height: 0;
+  }
+  @media (max-width: 980px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .panel-head {
+    padding: 8px 13px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11.5px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  /* ===================== 工厂俯视图 ===================== */
+  .floor-wrap {
+    padding: 10px;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+  }
+  svg.floor { width: 100%; max-width: 420px; height: auto; display: block; }
+
+  .zone-rect {
+    fill: var(--zone);
+    stroke: var(--zone-line);
+    stroke-width: 1;
+    transition: fill .35s ease, stroke .35s ease;
+  }
+  .zone-rect.active-high { fill: rgba(248,81,73,.12); stroke: var(--high); }
+  .zone-rect.active-mid  { fill: rgba(210,153,34,.12); stroke: var(--mid); }
+  .zone-rect.active-low  { fill: rgba(63,185,80,.10);  stroke: var(--low); }
+
+  .zone-label { fill: var(--text); font-size: 13px; font-weight: 600; }
+  .zone-sub   { fill: var(--muted); font-size: 10.5px; }
+
+  .agv { transition: transform .75s cubic-bezier(.4,.1,.2,1); }
+  .agv-body { fill: var(--accent); rx: 4; filter: drop-shadow(0 0 6px rgba(88,166,255,.6)); }
+
+  /* ===================== 事件横条（全宽） ===================== */
+  .event-strip {
+    margin: 12px 12px 0;
+    padding: 9px 13px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 14px;
+    flex-shrink: 0;
+  }
+  .evt-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .evt-group-label {
+    font-size: 10.5px; color: var(--muted);
+    padding-right: 4px; border-right: 1px solid var(--border);
+    margin-right: 2px; white-space: nowrap;
+  }
+  .evt-btn {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11.5px;
+    white-space: nowrap;
+    transition: all .15s;
+  }
+  .evt-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .evt-btn:disabled { opacity: .45; cursor: not-allowed; }
+  .evt-btn.active {
+    border-color: var(--accent); background: rgba(88,166,255,.12);
+    color: var(--accent); box-shadow: 0 0 0 1px rgba(88,166,255,.25) inset;
+  }
+  .evt-btn.auto-btn {
+    border-color: var(--low); color: var(--low); font-weight: 600;
+  }
+  .evt-btn.auto-btn:hover { background: rgba(63,185,80,.12); }
+  .evt-btn.auto-btn.running {
+    border-color: var(--mid); color: var(--mid);
+    background: rgba(210,153,34,.12);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: .55; } }
+  .evt-group.auto-group {
+    margin-left: auto; padding-left: 14px;
+    border-left: 1px solid var(--border);
+  }
+
+  /* ===================== 右侧分析面板 ===================== */
+  .analysis { overflow-y: auto; padding: 12px 14px; flex: 1; }
+
+  .steps { display: flex; gap: 8px; margin-bottom: 12px; }
+  .step {
+    flex: 1; text-align: center; padding: 7px 4px;
+    border: 1px solid var(--border); border-radius: 4px;
+    font-size: 11.5px; color: var(--muted);
+    transition: all .2s;
+  }
+  .step.done   { border-color: var(--low); color: var(--low); }
+  .step.active { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.08); }
+  .step .spinner {
+    display: inline-block; width: 8px; height: 8px;
+    border: 1.5px solid var(--accent); border-top-color: transparent;
+    border-radius: 50%; animation: spin .7s linear infinite;
+    margin-right: 5px; vertical-align: -1px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .section-title {
+    font-size: 10.5px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .6px; margin: 13px 0 7px;
+    padding-bottom: 4px; border-bottom: 1px solid var(--border);
+  }
+  .section-title:first-child { margin-top: 0; }
+
+  /* 召回卡片：右栏变宽后用网格排布，信息密度更高 */
+  #recall-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 7px;
+  }
+  .recall-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 11px;
+    animation: fadeIn .3s ease;
+  }
+  .recall-card.rank-1 { border-left-color: var(--accent); }
+  .recall-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; gap: 8px; }
+  .recall-score { font-family: var(--mono); font-size: 13.5px; font-weight: 600; color: var(--accent); }
+  .recall-meta { font-size: 10.5px; color: var(--muted); text-align: right; }
+  .recall-desc { font-size: 12px; line-height: 1.5; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .recall-empty { color: var(--muted); font-size: 12px; }
+
+  /* 风险决策条 */
+  .decision {
+    display: flex; align-items: center; gap: 14px;
+    padding: 11px 14px; border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+  }
+  .risk-badge {
+    font-size: 13px; font-weight: 700; padding: 5px 14px;
+    border-radius: 3px; flex-shrink: 0; white-space: nowrap;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .risk-高风险 { background: rgba(248,81,73,.15); color: var(--high); border-color: var(--high); }
+  .risk-中风险 { background: rgba(210,153,34,.15); color: var(--mid);  border-color: var(--mid); }
+  .risk-低风险 { background: rgba(63,185,80,.12);  color: var(--low);  border-color: var(--low); }
+  .decision-body { font-size: 12.5px; line-height: 1.55; min-width: 0; }
+  .decision-body .act { color: var(--text); font-weight: 600; }
+  .decision-body .why { color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+  /* LLM 报告 */
+  .report {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 11px 14px;
+    font-size: 12.5px;
+    line-height: 1.8;
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-height: 80px;
+  }
+  .report .seg-head { color: var(--accent); font-weight: 600; }
+  .report-placeholder { color: var(--muted); font-size: 12px; }
+  .report-loading { color: var(--muted); font-size: 12px; }
+  .report-loading::after {
+    content: ''; display: inline-block; width: 6px; height: 12px;
+    background: var(--accent); vertical-align: -2px; margin-left: 4px;
+    animation: blink 1s steps(2) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* 指标网格：右栏宽，用 3 列 */
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+  .metric {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 8px 11px;
+  }
+  .metric .k { font-size: 10.5px; color: var(--muted); }
+  .metric .v { font-family: var(--mono); font-size: 13px; color: var(--text); margin-top: 3px; }
+  .metric .v.good { color: var(--low); }
+  .metric .v.warn { color: var(--mid); }
+  .metric .v.bad  { color: var(--high); }
+
+  /* ===================== 日志流 ===================== */
+  .log-panel {
+    margin: 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    height: 118px;
+    display: flex; flex-direction: column;
+    flex-shrink: 0;
+  }
+  .log-body {
+    flex: 1; overflow-y: auto; padding: 7px 13px;
+    font-family: var(--mono); font-size: 11px; line-height: 1.7;
+    color: var(--muted);
+  }
+  .log-line .ts { color: #4a5568; margin-right: 8px; }
+  .log-line.ok   .msg { color: var(--low); }
+  .log-line.info .msg { color: var(--text); }
+  .log-line.warn .msg { color: var(--mid); }
+  .log-line.err  .msg { color: var(--high); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>AGV 故障智能分析系统</h1>
+    <span class="tag">V1 POC</span>
+    <span class="tag">区域优先召回 · LLM 辅助解读</span>
+  </div>
+  <div class="stats">
+    <span><span class="dot"></span>服务在线</span>
+    <span>知识库 <b id="stat-kb">-</b> 条</span>
+    <span>向量维度 <b id="stat-dim">-</b></span>
+  </div>
+</header>
+
+<main>
+  <!-- ========== 左：工厂俯视图 ========== -->
+  <section class="panel">
+    <div class="panel-head">
+      <span>工厂俯视图</span>
+      <span>点击下方事件注入</span>
+    </div>
+
+    <div class="floor-wrap">
+      <svg class="floor" viewBox="0 0 660 440" xmlns="http://www.w3.org/2000/svg">
+        <g id="z-RAN">
+          <rect class="zone-rect" x="16" y="16" width="306" height="196" rx="6"/>
+          <text class="zone-label" x="32" y="46">装载区</text>
+          <text class="zone-sub"   x="32" y="64">region_RAN</text>
+        </g>
+        <g id="z-RAZ">
+          <rect class="zone-rect" x="338" y="16" width="306" height="196" rx="6"/>
+          <text class="zone-label" x="354" y="46">缓存区</text>
+          <text class="zone-sub"   x="354" y="64">region_RAZ</text>
+        </g>
+        <g id="z-RDA">
+          <rect class="zone-rect" x="16" y="228" width="306" height="196" rx="6"/>
+          <text class="zone-label" x="32" y="258">充电区</text>
+          <text class="zone-sub"   x="32" y="276">region_RDA</text>
+        </g>
+        <g id="z-RAB">
+          <rect class="zone-rect" x="338" y="228" width="306" height="196" rx="6"/>
+          <text class="zone-label" x="354" y="258">避让区</text>
+          <text class="zone-sub"   x="354" y="276">region_RAB</text>
+        </g>
+
+        <!-- AGV -->
+        <g id="agv" class="agv" transform="translate(169,114)">
+          <rect class="agv-body" x="-17" y="-11" width="34" height="22"/>
+          <rect x="-11" y="-5" width="22" height="10" fill="#0b0e14" opacity=".55" rx="2"/>
+        </g>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ========== 右：分析面板 ========== -->
+  <section class="panel">
+    <div class="panel-head">
+      <span>实时分析</span>
+      <span id="event-label">—</span>
+    </div>
+
+    <div class="analysis">
+      <div class="steps">
+        <div class="step" id="step-retrieve">① 向量检索</div>
+        <div class="step" id="step-decide">② 规则决策</div>
+        <div class="step" id="step-llm">③ LLM 解读</div>
+      </div>
+
+      <div class="section-title">召回结果 Top3</div>
+      <div id="recall-list">
+        <div class="recall-empty">等待事件注入 ...</div>
+      </div>
+
+      <div class="section-title">规则系统决策（LLM 不可修改）</div>
+      <div class="decision">
+        <div class="risk-badge" id="risk-badge">—</div>
+        <div class="decision-body">
+          <div class="act" id="action-text">等待分析 ...</div>
+          <div class="why" id="why-text"></div>
+        </div>
+      </div>
+
+      <div class="section-title">LLM 辅助分析报告</div>
+      <div class="report" id="report-box">
+        <span class="report-placeholder">LLM 仅做解读，不参与安全决策。</span>
+      </div>
+
+      <div class="section-title">运行指标</div>
+      <div class="metrics">
+        <div class="metric"><div class="k">召回耗时</div><div class="v" id="m-retrieval">—</div></div>
+        <div class="metric"><div class="k">LLM 耗时</div><div class="v" id="m-llm">—</div></div>
+        <div class="metric"><div class="k">Token 用量</div><div class="v" id="m-tokens">—</div></div>
+        <div class="metric"><div class="k">报告字数</div><div class="v" id="m-chars">—</div></div>
+        <div class="metric"><div class="k">Harness 状态</div><div class="v" id="m-status">—</div></div>
+        <div class="metric"><div class="k">安全校验</div><div class="v" id="m-valid">—</div></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ========== 事件横条（全宽，按区域分组） ========== -->
+<div class="event-strip" id="event-bar"></div>
+
+<!-- ========== 底部日志 ========== -->
+<div class="log-panel">
+  <div class="panel-head"><span>运行日志</span><span id="log-count">0 条</span></div>
+  <div class="log-body" id="log-body"></div>
+</div>
+
+<script>
+// ============================================================
+// 常量与状态
+// ============================================================
+const ZONE_CENTER = {
+  region_RAN: [169, 114],
+  region_RAZ: [491, 114],
+  region_RDA: [169, 326],
+  region_RAB: [491, 326],
+};
+const ZONE_ID = {
+  region_RAN: 'z-RAN',
+  region_RAZ: 'z-RAZ',
+  region_RDA: 'z-RDA',
+  region_RAB: 'z-RAB',
+};
+const RISK_CLASS = {
+  '高风险': 'active-high',
+  '中风险': 'active-mid',
+  '低风险': 'active-low',
+};
+
+let CONFIG = null;
+let BUSY = false;
+let LOG_COUNT = 0;
+
+// 自动演示状态
+const AUTO = { on: false, timer: null, index: 0, interval: 7000 };
+
+// ============================================================
+// 工具
+// ============================================================
+function $(id) { return document.getElementById(id); }
+
+function nowText() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function addLog(msg, level = 'info') {
+  LOG_COUNT += 1;
+  const line = document.createElement('div');
+  line.className = `log-line ${level}`;
+  line.innerHTML = `<span class="ts">[${nowText()}]</span><span class="msg"></span>`;
+  line.querySelector('.msg').textContent = msg;
+  $('log-body').appendChild(line);
+  $('log-body').scrollTop = $('log-body').scrollHeight;
+  $('log-count').textContent = `${LOG_COUNT} 条`;
+}
+
+function setStep(stage, state) {
+  const el = $('step-' + stage);
+  const label = el.dataset.label;
+  el.classList.remove('active', 'done');
+  if (state === 'active') {
+    el.classList.add('active');
+    el.innerHTML = `<span class="spinner"></span>${label}`;
+  } else if (state === 'done') {
+    el.classList.add('done');
+    el.textContent = `✓ ${label}`;
+  } else {
+    el.textContent = label;
+  }
+}
+
+function resetSteps() {
+  ['retrieve', 'decide', 'llm'].forEach(s => setStep(s, 'idle'));
+}
+
+function moveAgv(areaId) {
+  const center = ZONE_CENTER[areaId] || [330, 220];
+  $('agv').setAttribute('transform', `translate(${center[0]},${center[1]})`);
+}
+
+function clearZoneHighlight() {
+  Object.values(ZONE_ID).forEach(id => {
+    document.querySelector(`#${id} .zone-rect`)
+      .classList.remove('active-high', 'active-mid', 'active-low');
+  });
+}
+
+function highlightZone(areaId, riskLevel) {
+  clearZoneHighlight();
+  const gid = ZONE_ID[areaId];
+  const cls = RISK_CLASS[riskLevel];
+  if (!gid || !cls) return;
+  document.querySelector(`#${gid} .zone-rect`).classList.add(cls);
+}
+
+function setMetric(id, text, cls = '') {
+  const el = $(id);
+  el.textContent = text;
+  el.className = 'v' + (cls ? ' ' + cls : '');
+}
+
+function renderReport(text) {
+  const box = $('report-box');
+  box.innerHTML = '';
+  String(text || '').split('\n').forEach(line => {
+    const trimmed = line.trim();
+    const div = document.createElement('div');
+    if (/^[一二三]、/.test(trimmed)) {
+      div.innerHTML = `<span class="seg-head"></span>`;
+      div.querySelector('.seg-head').textContent = trimmed;
+      div.style.marginTop = '7px';
+    } else {
+      div.textContent = line;
+    }
+    box.appendChild(div);
+  });
+}
+
+// ============================================================
+// 初始化
+// ============================================================
+async function loadConfig() {
+  const res = await fetch('/api/config');
+  CONFIG = await res.json();
+  if (!CONFIG.ok) throw new Error(CONFIG.error || '配置加载失败');
+
+  $('stat-kb').textContent = CONFIG.kb_count;
+  $('stat-dim').textContent = CONFIG.embedding_dim;
+
+  renderEventBar(CONFIG.events);
+
+  addLog(`服务就绪：知识库 ${CONFIG.kb_count} 条，向量 ${CONFIG.embedding_dim} 维`, 'ok');
+  addLog(`预置事件 ${CONFIG.events.length} 个，覆盖 4 个作业区域 + 区域未知场景`);
+  addLog(`风险阈值：无匹配 <${CONFIG.thresholds.no_match}，中风险 ≥${CONFIG.thresholds.mid}，高风险 ≥${CONFIG.thresholds.high}`);
+}
+
+// 按 group 分组渲染事件按钮
+function renderEventBar(events) {
+  const bar = $('event-bar');
+  bar.innerHTML = '';
+
+  // 保持分组出现顺序
+  const groups = [];
+  const byGroup = {};
+  events.forEach(evt => {
+    const g = evt.group || '其他';
+    if (!byGroup[g]) { byGroup[g] = []; groups.push(g); }
+    byGroup[g].push(evt);
+  });
+
+  groups.forEach(g => {
+    const wrap = document.createElement('div');
+    wrap.className = 'evt-group';
+
+    const label = document.createElement('span');
+    label.className = 'evt-group-label';
+    label.textContent = g;
+    wrap.appendChild(label);
+
+    byGroup[g].forEach(evt => {
+      const btn = document.createElement('button');
+      btn.className = 'evt-btn';
+      btn.textContent = evt.label;
+      btn.dataset.eventId = evt.id;
+      btn.onclick = () => onEventClick(evt, btn);
+      wrap.appendChild(btn);
+    });
+
+    bar.appendChild(wrap);
+  });
+
+  // 末尾追加「自动演示」控制
+  const ctrl = document.createElement('div');
+  ctrl.className = 'evt-group auto-group';
+
+  const autoBtn = document.createElement('button');
+  autoBtn.className = 'evt-btn auto-btn';
+  autoBtn.id = 'auto-btn';
+  autoBtn.textContent = '▶ 自动演示';
+  autoBtn.onclick = toggleAuto;
+  ctrl.appendChild(autoBtn);
+
+  const autoStatus = document.createElement('span');
+  autoStatus.className = 'evt-group-label';
+  autoStatus.id = 'auto-status';
+  autoStatus.textContent = '';
+  ctrl.appendChild(autoStatus);
+
+  bar.appendChild(ctrl);
+}
+
+// ============================================================
+// 自动演示
+// ============================================================
+function toggleAuto() {
+  if (AUTO.on) stopAuto(); else startAuto();
+}
+
+function startAuto() {
+  if (!CONFIG || !CONFIG.events.length) return;
+  AUTO.on = true;
+  AUTO.index = 0;
+  const btn = $('auto-btn');
+  btn.textContent = '⏸ 停止自动';
+  btn.classList.add('running');
+  addLog(`自动演示已开启：每 ${AUTO.interval / 1000} 秒触发一条事件`, 'ok');
+  tickAuto();                                  // 立即触发第一条
+  AUTO.timer = setInterval(tickAuto, AUTO.interval);
+}
+
+function stopAuto() {
+  AUTO.on = false;
+  if (AUTO.timer) { clearInterval(AUTO.timer); AUTO.timer = null; }
+  const btn = $('auto-btn');
+  if (btn) {
+    btn.textContent = '▶ 自动演示';
+    btn.classList.remove('running');
+  }
+  const st = $('auto-status');
+  if (st) st.textContent = '';
+  addLog('自动演示已停止');
+}
+
+function tickAuto() {
+  if (!CONFIG || !CONFIG.events.length) return;
+  // 上一轮分析还没结束则跳过本次，避免任务堆积
+  if (BUSY) return;
+
+  const evt = CONFIG.events[AUTO.index % CONFIG.events.length];
+  AUTO.index += 1;
+
+  const st = $('auto-status');
+  if (st) st.textContent = `${AUTO.index}/${CONFIG.events.length}`;
+
+  const btn = document.querySelector(`.evt-btn[data-event-id="${evt.id}"]`);
+  if (btn) onEventClick(evt, btn);
+}
+
+function initStepLabels() {
+  ['retrieve', 'decide', 'llm'].forEach(s => {
+    const el = $('step-' + s);
+    el.dataset.label = el.textContent.trim();
+  });
+}
+
+// ============================================================
+// 事件流程
+// ============================================================
+async function onEventClick(evt, btn) {
+  if (BUSY) return;
+  BUSY = true;
+  document.querySelectorAll('.evt-btn').forEach(b => {
+    b.disabled = true;
+    b.classList.remove('active');
+  });
+  btn.classList.add('active');
+
+  resetSteps();
+  clearZoneHighlight();
+  $('event-label').textContent = evt.label;
+  $('recall-list').innerHTML = '<div class="recall-empty">检索中 ...</div>';
+  $('risk-badge').textContent = '—';
+  $('risk-badge').className = 'risk-badge';
+  $('action-text').textContent = '等待分析 ...';
+  $('why-text').textContent = '';
+  $('report-box').innerHTML = '<span class="report-placeholder">等待检索完成 ...</span>';
+  ['m-retrieval', 'm-llm', 'm-tokens', 'm-chars', 'm-status', 'm-valid']
+    .forEach(id => setMetric(id, '—'));
+
+  if (evt.area_id) moveAgv(evt.area_id);
+  addLog(`注入事件：${evt.group} · ${evt.label}（${evt.area_id || '区域未知'}）`);
+
+  // ---------- 阶段 1：检索 + 规则决策（毫秒级） ----------
+  setStep('retrieve', 'active');
+  let retrieveData;
+  try {
+    const res = await fetch('/api/retrieve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query_text: evt.query_text, area_id: evt.area_id }),
+    });
+    retrieveData = await res.json();
+    if (!retrieveData.ok) throw new Error(retrieveData.error || '检索失败');
+  } catch (err) {
+    setStep('retrieve', 'idle');
+    addLog('检索失败：' + err.message, 'err');
+    finishBusy();
+    return;
+  }
+
+  setStep('retrieve', 'done');
+  setStep('decide', 'done');
+
+  // 渲染召回卡片（右栏网格布局）
+  const list = $('recall-list');
+  list.innerHTML = '';
+  if (!retrieveData.results.length) {
+    list.innerHTML = '<div class="recall-empty">未召回任何结果</div>';
+  }
+  retrieveData.results.forEach((r, i) => {
+    const card = document.createElement('div');
+    card.className = 'recall-card' + (i === 0 ? ' rank-1' : '');
+    card.style.animationDelay = `${i * 60}ms`;
+    card.innerHTML = `
+      <div class="recall-top">
+        <span class="recall-score">${r.score.toFixed(4)}</span>
+        <span class="recall-meta">${r.fault_id}<br>${r.area_id} · ${r.risk_level}</span>
+      </div>
+      <div class="recall-desc"></div>`;
+    card.querySelector('.recall-desc').textContent = r.fault_desc;
+    list.appendChild(card);
+  });
+
+  // 风险决策（立即显示，不等 LLM）
+  $('risk-badge').textContent = retrieveData.risk_level;
+  $('risk-badge').className = 'risk-badge risk-' + retrieveData.risk_level;
+  $('action-text').textContent = retrieveData.action;
+  $('why-text').textContent =
+    `${retrieveData.decision} ｜ max_sim=${retrieveData.max_sim.toFixed(4)} ｜ avg=${retrieveData.avg_similarity.toFixed(4)}`;
+
+  highlightZone(evt.area_id, retrieveData.risk_level);
+  setMetric('m-retrieval', retrieveData.cost_ms.toFixed(1) + ' ms', 'good');
+  addLog(`召回 ${retrieveData.results.length} 条，max_sim=${retrieveData.max_sim.toFixed(4)}，判定 ${retrieveData.risk_level}`, 'ok');
+  addLog(`规则动作：${retrieveData.action}`);
+
+  // ---------- 阶段 2：LLM 分析（秒级，异步） ----------
+  $('report-box').innerHTML = '<span class="report-loading">LLM 正在生成分析报告</span>';
+  setStep('llm', 'active');
+  addLog('调用 LLM 进行辅助分析（经 Harness 校验）...');
+
+  try {
+    const res2 = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query_text: evt.query_text, area_id: evt.area_id }),
+    });
+    const data2 = await res2.json();
+    if (!data2.ok) throw new Error(data2.error || 'LLM 分析失败');
+
+    renderReport(data2.report);
+
+    const h = data2.harness;
+    setMetric('m-llm', Math.round(h.cost_ms) + ' ms');
+    setMetric('m-tokens', `${h.total_tokens}`);
+    setMetric('m-chars', `${h.report_chars} 字`);
+    setMetric('m-status', h.status, h.status === 'success' ? 'good' : 'warn');
+    setMetric('m-valid', h.validation.passed ? '通过' : '拦截',
+              h.validation.passed ? 'good' : 'bad');
+
+    if (h.status === 'success') {
+      addLog(`LLM 报告完成：${h.report_chars} 字，${h.total_tokens} tokens，${Math.round(h.cost_ms)} ms`, 'ok');
+      if (h.validation.too_long) addLog('提示：报告篇幅超过软阈值', 'warn');
+    } else {
+      addLog(`LLM 已降级：${h.error || '未知原因'}`, 'warn');
+    }
+  } catch (err) {
+    $('report-box').innerHTML =
+      '<span class="report-placeholder">LLM 分析失败，已保留规则结论。</span>';
+    addLog('LLM 分析失败：' + err.message, 'err');
+    setMetric('m-status', 'failed', 'bad');
+  } finally {
+    setStep('llm', 'done');
+    finishBusy();
+  }
+}
+
+function finishBusy() {
+  BUSY = false;
+  document.querySelectorAll('.evt-btn').forEach(b => (b.disabled = false));
+}
+
+// ============================================================
+// 启动
+// ============================================================
+window.addEventListener('DOMContentLoaded', async () => {
+  initStepLabels();
+  try {
+    await loadConfig();
+  } catch (err) {
+    addLog('配置加载失败：' + err.message, 'err');
+  }
+});
+</script>
+</body>
+</html>
