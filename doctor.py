@@ -34,13 +34,28 @@ WARN = "⚠️ "
 results: List[Tuple[str, bool, str]] = []   # (名称, 是否通过, 修复建议)
 
 
+# 3D 联动是可选特性：它不通过时只警告，不算失败
+OPTIONAL_LEVELS = {"3D", "UI"}
+
+
 def record(level: str, name: str, ok: bool, hint: str = "") -> None:
-    """记录一项检查结果。"""
-    results.append((f"[{level}] {name}", ok, hint))
-    mark = PASS if ok else FAIL
+    """记录一项检查结果。
+
+    核心依赖（向量模型、LLM 配置等）不通过 → 计入失败。
+    可选依赖（3D 联动、Web 服务）不通过 → 只提示，不阻断。
+    """
+    optional = level in OPTIONAL_LEVELS
+    if not (optional and not ok):
+        results.append((f"[{level}] {name}", ok, hint))
+
+    if ok:
+        mark = PASS
+    else:
+        mark = WARN if optional else FAIL
     print(f"  {mark} [{level}] {name}")
     if not ok and hint:
-        print(f"        → {hint}")
+        prefix = "（可选，不影响核心链路）" if optional else ""
+        print(f"        → {prefix}{hint}")
 
 
 def has_module(name: str) -> bool:
