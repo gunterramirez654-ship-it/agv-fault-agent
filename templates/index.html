@@ -351,10 +351,30 @@
               fill="none" stroke="none"/>
 
         <!-- AGV：黄色箭头指示车头方向 -->
+        <!-- AGV：工业巡检车造型（扁平车身 + 传感器桅杆 + 前灯带 + 轮组） -->
         <g id="agv" class="agv" transform="translate(169,114)">
-          <polygon points="17,-8 28,0 17,8" fill="#ffc400"/>
-          <rect class="agv-body" x="-17" y="-11" width="34" height="22" rx="4"/>
-          <rect x="-11" y="-5" width="22" height="10" fill="#0b0e14" opacity=".5" rx="2"/>
+          <!-- 落地阴影 -->
+          <ellipse cx="0" cy="11" rx="21" ry="7" fill="#000" opacity=".38"/>
+          <!-- 底盘 -->
+          <rect x="-20" y="-12" width="40" height="24" rx="3"
+                fill="#2b3542" stroke="#46566b" stroke-width="1"/>
+          <!-- 上层甲板 -->
+          <rect x="-16" y="-9" width="30" height="17" rx="2" fill="#3a4859"/>
+          <!-- 甲板上的货位条纹 -->
+          <rect x="-12" y="-6" width="14" height="2" fill="#4d5f74"/>
+          <rect x="-12" y="-2" width="14" height="2" fill="#4d5f74"/>
+          <rect x="-12" y="2" width="14" height="2" fill="#4d5f74"/>
+          <!-- 传感器桅杆（黑色基座 + 蓝色镜头） -->
+          <circle cx="1" cy="-1" r="5.2" fill="#12171e" stroke="#6b7f96" stroke-width="1"/>
+          <circle cx="1" cy="-1" r="2.2" fill="#58a6ff"/>
+          <!-- 前灯带（车头方向 +X） -->
+          <rect x="12" y="-7" width="4.5" height="14" rx="1.5" fill="#ffb020"/>
+          <rect x="12" y="-7" width="4.5" height="4" rx="1.5" fill="#fff2c0" opacity=".85"/>
+          <!-- 轮组 -->
+          <rect x="-15" y="9.5" width="10" height="5" rx="2.2" fill="#11161d"/>
+          <rect x="4" y="9.5" width="10" height="5" rx="2.2" fill="#11161d"/>
+          <!-- 车头方向指示（细箭头，不抢眼） -->
+          <path d="M20.5,0 l5.5,-3.4 v6.8 z" fill="#ffb020" opacity=".9"/>
         </g>
       </svg>
     </div>
