@@ -113,6 +113,7 @@
   .zone-rect.active-high { fill: rgba(248,81,73,.12); stroke: var(--high); }
   .zone-rect.active-mid  { fill: rgba(210,153,34,.12); stroke: var(--mid); }
   .zone-rect.active-low  { fill: rgba(63,185,80,.10);  stroke: var(--low); }
+  .zone-rect.active-idle { fill: rgba(88,166,255,.08); stroke: var(--accent); }
 
   .zone-label { fill: var(--text); font-size: 13px; font-weight: 600; }
   .zone-sub   { fill: var(--muted); font-size: 10.5px; }
@@ -342,9 +343,18 @@
         </g>
 
         <!-- AGV -->
+        <!-- 巡游路径（不可见，仅供动画取点） -->
+        <path id="patrol-path"
+              d="M 229 114 L 431 114 Q 491 114 491 174 L 491 266
+                 Q 491 326 431 326 L 229 326 Q 169 326 169 266
+                 L 169 174 Q 169 114 229 114 Z"
+              fill="none" stroke="none"/>
+
+        <!-- AGV：黄色箭头指示车头方向 -->
         <g id="agv" class="agv" transform="translate(169,114)">
-          <rect class="agv-body" x="-17" y="-11" width="34" height="22"/>
-          <rect x="-11" y="-5" width="22" height="10" fill="#0b0e14" opacity=".55" rx="2"/>
+          <polygon points="17,-8 28,0 17,8" fill="#ffc400"/>
+          <rect class="agv-body" x="-17" y="-11" width="34" height="22" rx="4"/>
+          <rect x="-11" y="-5" width="22" height="10" fill="#0b0e14" opacity=".5" rx="2"/>
         </g>
       </svg>
     </div>
@@ -425,14 +435,25 @@ const RISK_CLASS = {
   '高风险': 'active-high',
   '中风险': 'active-mid',
   '低风险': 'active-low',
+  'idle':    'active-idle',   // 巡游经过、尚未出结论
 };
 
 let CONFIG = null;
 let BUSY = false;
 let LOG_COUNT = 0;
 
-// 自动演示状态
-const AUTO = { on: false, timer: null, index: 0, interval: 7000 };
+// 自动演示状态（巡游驱动：车开到哪个区就报哪个区的故障）
+const AUTO = { on: false, index: 0 };
+
+// 巡游动画状态
+const PATROL = {
+  len: 0,
+  s: 0,
+  speed: 105,        // 像素/秒
+  dwellUntil: 0,
+  lastZone: null,
+  zoneS: {},         // 各区域在路径上的弧长位置
+};
 
 // ============================================================
 // 工具
@@ -476,8 +497,12 @@ function resetSteps() {
 }
 
 function moveAgv(areaId) {
-  const center = ZONE_CENTER[areaId] || [330, 220];
-  $('agv').setAttribute('transform', `translate(${center[0]},${center[1]})`);
+  // 把巡游位置吸附到该区域在路径上的对应点，视觉上就是"车开到了这个区"
+  if (PATROL.zoneS[areaId] !== undefined) {
+    PATROL.s = PATROL.zoneS[areaId];
+    PATROL.lastZone = areaId;
+    PATROL.dwellUntil = performance.now() + 1500;
+  }
 }
 
 function clearZoneHighlight() {
@@ -599,20 +624,15 @@ function toggleAuto() {
 }
 
 function startAuto() {
-  if (!CONFIG || !CONFIG.events.length) return;
   AUTO.on = true;
-  AUTO.index = 0;
   const btn = $('auto-btn');
   btn.textContent = '⏸ 停止自动';
   btn.classList.add('running');
-  addLog(`自动演示已开启：每 ${AUTO.interval / 1000} 秒触发一条事件`, 'ok');
-  tickAuto();                                  // 立即触发第一条
-  AUTO.timer = setInterval(tickAuto, AUTO.interval);
+  addLog('自动演示已开启：AGV 巡游，每到一区自动上报该区故障', 'ok');
 }
 
 function stopAuto() {
   AUTO.on = false;
-  if (AUTO.timer) { clearInterval(AUTO.timer); AUTO.timer = null; }
   const btn = $('auto-btn');
   if (btn) {
     btn.textContent = '▶ 自动演示';
@@ -623,19 +643,82 @@ function stopAuto() {
   addLog('自动演示已停止');
 }
 
-function tickAuto() {
-  if (!CONFIG || !CONFIG.events.length) return;
-  // 上一轮分析还没结束则跳过本次，避免任务堆积
-  if (BUSY) return;
+// ============================================================
+// 巡游动画：AGV 沿路径连续行驶，车头始终朝向行进方向
+// ============================================================
+function initPatrol() {
+  const path = $('patrol-path');
+  if (!path || !path.getTotalLength()) return;
+  PATROL.len = path.getTotalLength();
 
-  const evt = CONFIG.events[AUTO.index % CONFIG.events.length];
-  AUTO.index += 1;
+  // 采样找每个区域中心在路径上的最近位置
+  const N = 800;
+  for (const [area, c] of Object.entries(ZONE_CENTER)) {
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < N; i++) {
+      const sp = PATROL.len * i / N;
+      const pt = path.getPointAtLength(sp);
+      const d = Math.hypot(pt.x - c[0], pt.y - c[1]);
+      if (d < bestD) { bestD = d; best = sp; }
+    }
+    PATROL.zoneS[area] = best;
+  }
+  PATROL.s = PATROL.zoneS.region_RAN || 0;
+  requestAnimationFrame(tickPatrol);
+}
 
-  const st = $('auto-status');
-  if (st) st.textContent = `${AUTO.index}/${CONFIG.events.length}`;
+let _lastT = 0;
+function tickPatrol(t) {
+  const dt = _lastT ? Math.min((t - _lastT) / 1000, 0.08) : 0.016;
+  _lastT = t;
 
-  const btn = document.querySelector(`.evt-btn[data-event-id="${evt.id}"]`);
-  if (btn) onEventClick(evt, btn);
+  const path = $('patrol-path');
+  if (!path) { requestAnimationFrame(tickPatrol); return; }
+
+  if (t >= PATROL.dwellUntil) {
+    PATROL.s = (PATROL.s + PATROL.speed * dt) % PATROL.len;
+  }
+
+  const a = path.getPointAtLength(PATROL.s);
+  const b = path.getPointAtLength((PATROL.s + 8) % PATROL.len);
+  const deg = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
+
+  const agv = $('agv');
+  if (agv) {
+    agv.setAttribute('transform',
+      `translate(${a.x.toFixed(1)},${a.y.toFixed(1)}) rotate(${deg.toFixed(1)})`);
+  }
+
+  // 判断是否经过某个区域
+  let near = null;
+  for (const [area, sp] of Object.entries(PATROL.zoneS)) {
+    const d = Math.abs(((PATROL.s - sp + PATROL.len / 2) % PATROL.len)
+                       - PATROL.len / 2);
+    if (d < 18) { near = area; break; }
+  }
+
+  if (near && PATROL.lastZone !== near) {
+    PATROL.lastZone = near;
+    PATROL.dwellUntil = t + 1600;
+
+    if (AUTO.on && CONFIG) {
+      const pool = CONFIG.events.filter(e => e.area_id === near);
+      if (pool.length && !BUSY) {
+        const evt = pool[AUTO.index % pool.length];
+        AUTO.index += 1;
+        const st = $('auto-status');
+        if (st) st.textContent = `${AUTO.index}`;
+        const btn = document.querySelector(`.evt-btn[data-event-id="${evt.id}"]`);
+        onEventClick(evt, btn || document.createElement('button'));
+      }
+    } else {
+      highlightZone(near, 'idle');
+    }
+  } else if (!near && PATROL.lastZone) {
+    PATROL.lastZone = null;
+  }
+
+  requestAnimationFrame(tickPatrol);
 }
 
 function initStepLabels() {
@@ -776,6 +859,7 @@ function finishBusy() {
 // ============================================================
 window.addEventListener('DOMContentLoaded', async () => {
   initStepLabels();
+  initPatrol();
   try {
     await loadConfig();
   } catch (err) {
