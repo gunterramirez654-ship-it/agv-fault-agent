@@ -97,6 +97,7 @@ DEFAULT_SCENE = os.path.join("scenes", "agv_demo.ttt")
 
 POLL_HZ = 20                 # 控制/轮询频率（运动学模式下越高越平滑）
 DEFAULT_COOLDOWN = 3.0       # 两次分析之间的最小间隔
+DWELL_SECONDS = 4.0          # 到站停留时长：让观众看清结果，也让节奏不至于太赶
 
 # 运动学移动参数
 LINEAR_SPEED = 0.55          # m/s（墙钟时间；受轮询频率限制）
@@ -177,49 +178,53 @@ def disable_all_scripts(sim: Any) -> int:
     return count
 
 
-def find_robot_with_joints(sim: Any, preferred: str
-                           ) -> Tuple[Any, str, Any, Any]:
-    """定位二轮差速机器人，返回 (根对象, 别名, 左轮关节, 右轮关节)。"""
-    def _joints_of(root: Any) -> Tuple[Any, Any]:
-        left = right = None
-        for k in sim.getObjectsInTree(root):
-            try:
-                if sim.getObjectType(k) != 1:
-                    continue
-                a = sim.getObjectAlias(k, 1).lower()
-                if "left" in a:
-                    left = k
-                elif "right" in a:
-                    right = k
-            except Exception:  # noqa: BLE001
-                pass
-        return left, right
+def find_all_robots(sim: Any, preferred: str) -> List[Dict[str, Any]]:
+    """扫描场景中所有二轮差速机器人，返回描述列表。
 
-    # 先试指定路径
-    try:
-        h = sim.getObject(preferred)
-        left, right = _joints_of(h)
-        if left is not None and right is not None:
-            return h, sim.getObjectAlias(h, 1), left, right
-    except Exception:  # noqa: BLE001
-        pass
+    每项包含：root / alias / left / right / base_quat
+    base_quat 用于保持模型原始姿态（见 move_kinematic 的说明）。
+    """
+    robots: List[Dict[str, Any]] = []
+    seen = set()
 
-    # 扫描场景
     for h in sim.getObjectsInTree(sim.handle_scene):
         try:
             kids = sim.getObjectsInTree(h)
             joints = [k for k in kids if sim.getObjectType(k) == 1]
             if len(joints) != 2:
                 continue
-            left, right = _joints_of(h)
-            if left is not None and right is not None:
-                return h, sim.getObjectAlias(h, 1), left, right
+            left = right = None
+            for k in joints:
+                a = sim.getObjectAlias(k, 1).lower()
+                if "left" in a:
+                    left = k
+                elif "right" in a:
+                    right = k
+            if left is None or right is None:
+                continue
+            if h in seen:
+                continue
+            seen.add(h)
+            robots.append({
+                "root": h,
+                "alias": sim.getObjectAlias(h, 1),
+                "left": left,
+                "right": right,
+                "base_quat": tuple(sim.getObjectQuaternion(h, -1)),
+                "wp_index": 0,
+                "dwell_until": 0.0,
+            })
         except Exception:  # noqa: BLE001
             continue
 
-    raise RuntimeError(
-        "场景中找不到二轮差速机器人（需要 2 个含 left/right 的旋转关节）。\n"
-        "          可运行 ./run.sh scene 重新生成演示场景。")
+    if not robots:
+        raise RuntimeError(
+            "场景中找不到二轮差速机器人（需要 2 个含 left/right 的旋转关节）。\n"
+            "          可运行 ./run.sh scene 重新生成演示场景。")
+
+    # 把用户指定的那台排到最前（它负责触发分析）
+    robots.sort(key=lambda r: (r["alias"] != preferred, r["alias"]))
+    return robots
 
 
 def setup_zone_overlay(sim: Any) -> List[Any]:
@@ -276,27 +281,44 @@ def wrap_angle(a: float) -> float:
     return a
 
 
-def move_kinematic(sim: Any, root: Any, target: Tuple[float, float],
-                  speed: float, dt: float) -> float:
-    """把 AGV 沿直线朝目标点推进一小步，返回剩余距离。
+def quat_mul(a: Tuple[float, float, float, float],
+             b: Tuple[float, float, float, float]
+             ) -> Tuple[float, float, float, float]:
+    """四元数乘法 a*b（Hamilton 约定，xyzw 顺序）。"""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
 
-    为什么不用物理驱动（setJointTargetVelocity）：
-        实测在本机环境下，CoppeliaSim 的仿真时间推进极不稳定
-        （同样的 2 秒等待，有时只推进 0.0s，有时 1.7s），
-        而且模型自带脚本会主动暂停仿真（状态 8）。
-        物理驱动因此不可靠。
 
-        改为直接设置位姿（运动学动画）：不依赖物理引擎与任何脚本，
-        行为完全确定。代价是轮子不转、没有碰撞物理，
-        但演示要表达的是"AGV 在区域间移动并触发分析"，这一点不受影响。
+def quat_from_z(angle: float) -> Tuple[float, float, float, float]:
+    """绕世界 Z 轴旋转 angle 弧度的四元数。"""
+    return (0.0, 0.0, math.sin(angle / 2.0), math.cos(angle / 2.0))
 
-    参数：
-        speed : 移动速度（米/秒，墙钟时间）
-        dt    : 本次推进的时间步长（秒）
 
-    返回：
-        与目标点的剩余距离（米）
+def move_kinematic(sim: Any, robot: Dict[str, Any],
+                   target: Tuple[float, float], speed: float, dt: float,
+                   yaw_offset: float) -> float:
+    """把 AGV 朝目标点推进一小步，返回剩余距离。
+
+    关于朝向（关键）：
+        dr12 模型的原始姿态是 (0, -1.57, 0)，即绕 Y 轴 -90° 才正立。
+        如果直接把朝向设成 (0, 0, yaw)，机器人会躺倒 —— 这正是
+        "小车倒立"问题的原因。
+
+        正确做法：保留模型原始姿态，再在其上叠加绕世界 Z 轴的偏航：
+            q_new = q_z(yaw) * q_base
+        用四元数相乘实现，既能转向又不会破坏"正立"。
+
+    为什么不用物理驱动：
+        本机环境下仿真时间推进不稳定（同样 2 秒有时只推进 0.0s），
+        且模型脚本会主动暂停仿真，物理驱动不可靠。
     """
+    root = robot["root"]
     pos = sim.getObjectPosition(root, -1)
     x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
     dx, dy = target[0] - x, target[1] - y
@@ -305,10 +327,10 @@ def move_kinematic(sim: Any, root: Any, target: Tuple[float, float],
     if dist < 1e-6:
         return 0.0
 
-    # 朝目标方向设置朝向（模拟车头转向）
-    yaw = math.atan2(dy, dx)
+    yaw = math.atan2(dy, dx) + yaw_offset
     try:
-        sim.setObjectOrientation(root, -1, [0.0, 0.0, yaw])
+        q = quat_mul(quat_from_z(yaw), robot["base_quat"])
+        sim.setObjectQuaternion(root, -1, list(q))
     except Exception:  # noqa: BLE001
         pass
 
@@ -379,6 +401,9 @@ def main() -> int:
                         help=f"两次分析最小间隔（默认 {DEFAULT_COOLDOWN}s）")
     parser.add_argument("--host", default=ZMQ_HOST)
     parser.add_argument("--port", type=int, default=ZMQ_PORT)
+    parser.add_argument("--yaw-offset", type=float, default=math.pi,
+                        help="车头朝向补偿（弧度）。dr12 模型 forward 轴与世界 +x 相反，"
+                             "默认 pi；若发现车头朝反方向，改成 0")
     args = parser.parse_args()
 
     print("=" * 78)
@@ -427,7 +452,7 @@ def main() -> int:
 
     # ---- 4) 定位机器人（必要时自动加载场景）----
     try:
-        root, alias, left, right = find_robot_with_joints(sim, args.robot)
+        robots = find_all_robots(sim, args.robot)
     except RuntimeError as first_exc:
         scene_path = os.path.abspath(args.scene)
         if args.no_auto_scene or not os.path.isfile(scene_path):
@@ -437,25 +462,28 @@ def main() -> int:
         try:
             sim.loadScene(scene_path)
             time.sleep(3.0)
-            root, alias, left, right = find_robot_with_joints(sim, args.robot)
+            robots = find_all_robots(sim, args.robot)
             print("  ✅ 场景已加载")
         except Exception as exc:  # noqa: BLE001
             print(f"  [FATAL] 自动加载场景失败：{type(exc).__name__}: {exc}")
             return 1
 
-    print(f"  ✅ 跟踪对象：{alias}")
-    print(f"     左轮 {sim.getObjectAlias(left, 1)} / 右轮 {sim.getObjectAlias(right, 1)}")
+    primary = robots[0]
+    print(f"  ✅ 场景内 {len(robots)} 台 AGV：")
+    for r in robots:
+        mark = "  ← 负责上报故障" if r is primary else ""
+        print(f"     {r['alias']}{mark}")
 
     try:
-        body = sim.getObject(alias + "/body")
+        body = sim.getObject(primary["alias"] + "/body")
     except Exception:  # noqa: BLE001
-        body = root
+        body = primary["root"]
     try:
         original_color = sim.getShapeColor(body, None, sim.colorcomponent_ambient_diffuse)
     except Exception:  # noqa: BLE001
         original_color = [0.7, 0.7, 0.7]
 
-    # ---- 5) 禁用脚本 + 绘图 + 启动 ----
+    # ---- 5) 禁用脚本 + 绘图 ----
     print("\n[3/5] 禁用场景脚本（模型自带脚本会暂停仿真）")
     n_scripts = disable_all_scripts(sim)
     print(f"  已禁用 {n_scripts} 个脚本")
@@ -474,21 +502,23 @@ def main() -> int:
 
     print("\n[4/5] 准备就绪（运动学模式：直接设置位姿，不依赖物理引擎）")
 
-    # ---- 主循环：航点巡游 ----
+    # 各机器人错开起始航点，避免同时挤在一处
+    for i, r in enumerate(robots):
+        r["wp_index"] = i % len(ZONES)
+
+    # ---- 主循环 ----
     print("\n[5/5] 开始巡游 ...（Ctrl+C 退出）\n")
     print("  " + "-" * 74)
     print(f"  {'时间':>7}  {'位置':>18}  {'区域':<8}  事件")
     print("  " + "-" * 74)
 
     started_ts = time.time()
-    wp_index = 0
-    wp_started = time.time()
     busy = False
     last_trigger_ts = 0.0
     trigger_count = 0
     cursor: Dict[str, int] = {}
     restore_color_at: Optional[float] = None
-    current_zone: Optional[str] = None
+    dt = 1.0 / POLL_HZ
 
     try:
         while True:
@@ -499,63 +529,54 @@ def main() -> int:
                 print(f"  已达到设定时长 {args.duration:.0f}s，准备退出 ...")
                 break
 
-            zone = ZONES[wp_index % len(ZONES)]
-
-            try:
-                pos = sim.getObjectPosition(root, -1)
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [warn] 读取位置失败：{type(exc).__name__}: {exc}")
-                time.sleep(0.5)
-                continue
-
-            x, y = float(pos[0]), float(pos[1])
-            dist = math.hypot(zone["waypoint"][0] - x, zone["waypoint"][1] - y)
-            traveled = now - wp_started
-
-            arrived = dist < WAYPOINT_TOLERANCE
-            timed_out = traveled > WAYPOINT_TIMEOUT
-
-            if arrived or timed_out:
-                stop_wheels(sim, left, right)
-
-                if timed_out and not arrived:
-                    print(f"  {elapsed:6.1f}s  ({x:7.3f},{y:7.3f})  "
-                          f"{zone['name']:<8}  ⚠️ 航点超时，就地触发")
-
-                if zone["area_id"] != current_zone:
-                    current_zone = zone["area_id"]
-                    draw_zone_highlight(sim, overlay, zone["area_id"], "idle")
-
-                # 到达 或 超时（卡住）都触发，保证演示不会静默
-                if (not busy) and (arrived or timed_out) and \
-                        (now - last_trigger_ts) >= args.cooldown:
-                    event = pick_event(zone["area_id"], cursor)
-                    if event:
-                        last_trigger_ts = now
-                        busy = True
-                        print(f"  {elapsed:6.1f}s  ({x:7.3f},{y:7.3f})  "
-                              f"{zone['name']:<8}  → {event['label']}")
-                        threading.Thread(
-                            target=_analysis_worker,
-                            args=({"query_text": event["query_text"],
-                                   "area_id": zone["area_id"],
-                                   "label": event["label"],
-                                   "area_name": zone["name"]},),
-                            daemon=True,
-                        ).start()
-
-                if not busy:
-                    wp_index += 1
-                    wp_started = now
-
-            if not busy:
+            # ---------- 驱动全部 AGV ----------
+            for r in robots:
+                if now < r["dwell_until"]:
+                    continue                     # 到站停留中
+                zone = ZONES[r["wp_index"] % len(ZONES)]
                 try:
-                    move_kinematic(sim, root, zone["waypoint"],
-                                   LINEAR_SPEED, 1.0 / POLL_HZ)
+                    remaining = move_kinematic(
+                        sim, r, zone["waypoint"], LINEAR_SPEED, dt,
+                        args.yaw_offset)
                 except Exception as exc:  # noqa: BLE001
                     print(f"  [warn] 移动失败：{type(exc).__name__}: {exc}")
+                    continue
 
-            # ---- 收取分析结果并回写 ----
+                if remaining < WAYPOINT_TOLERANCE:
+                    r["dwell_until"] = now + DWELL_SECONDS   # 到站停留
+                    r["wp_index"] += 1
+
+            # ---------- 主 AGV 到站则触发分析 ----------
+            zone = ZONES[(primary["wp_index"] - 1) % len(ZONES)]
+            on_dwell = now < primary["dwell_until"]
+            if on_dwell and (not busy) and \
+                    (now - last_trigger_ts) >= args.cooldown and \
+                    primary.get("dwell_mark") != primary["wp_index"]:
+
+                primary["dwell_mark"] = primary["wp_index"]
+                try:
+                    pos = sim.getObjectPosition(primary["root"], -1)
+                    x, y = float(pos[0]), float(pos[1])
+                except Exception:  # noqa: BLE001
+                    x = y = 0.0
+
+                draw_zone_highlight(sim, overlay, zone["area_id"], "idle")
+                event = pick_event(zone["area_id"], cursor)
+                if event:
+                    last_trigger_ts = now
+                    busy = True
+                    print(f"  {elapsed:6.1f}s  ({x:7.3f},{y:7.3f})  "
+                          f"{zone['name']:<8}  → {event['label']}")
+                    threading.Thread(
+                        target=_analysis_worker,
+                        args=({"query_text": event["query_text"],
+                               "area_id": zone["area_id"],
+                               "label": event["label"],
+                               "area_name": zone["name"]},),
+                        daemon=True,
+                    ).start()
+
+            # ---------- 收取分析结果 ----------
             while True:
                 try:
                     res = _res_queue.get_nowait()
@@ -563,8 +584,6 @@ def main() -> int:
                     break
 
                 busy = False
-                wp_index += 1
-                wp_started = time.time()
                 trigger_count += 1
                 job = res.get("_job", {})
 
@@ -600,6 +619,7 @@ def main() -> int:
                     print(f"           ⤷ 分析失败：{res.get('error')}")
                     print("  " + "-" * 74)
 
+            # ---------- 颜色恢复 ----------
             if restore_color_at is not None and now >= restore_color_at:
                 try:
                     sim.setShapeColor(body, None,
@@ -609,13 +629,12 @@ def main() -> int:
                     pass
                 restore_color_at = None
 
-            time.sleep(1.0 / POLL_HZ)
+            time.sleep(dt)
 
     except KeyboardInterrupt:
         print("\n\n[exit] 收到 Ctrl+C，正在停止 ...")
     finally:
         for step, fn in (
-            ("停止仿真", lambda: sim.stopSimulation()),
             ("恢复颜色", lambda: sim.setShapeColor(
                 body, None, sim.colorcomponent_ambient_diffuse,
                 make_color(original_color))),

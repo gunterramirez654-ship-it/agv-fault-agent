@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from typing import List, Tuple
 
 try:
@@ -117,22 +118,30 @@ def main() -> int:
         return 1
     print("  ✅ 已连接")
 
-    # ---- 清理已有对象（保证脚本可重复执行）----
+    # ---- 彻底清理场景（只保留默认相机/灯光/地面）----
+    # 说明：之前按前缀清理，漏掉了模型被拆散后留下的孤儿零件
+    #       （body_[n]、leftJoint_[n] 等），它们会以扭曲姿态留在场景里，
+    #       看起来像"倒立的坏机器人"。这里改为保留白名单、其余全删。
     if not args.keep_existing:
+        KEEP = {"DefaultCamera", "XYZCameraProxy", "DefaultLights", "Floor"}
         removed = 0
         for h in sim.getObjectsInTree(sim.handle_scene):
             try:
+                if sim.getObjectParent(h) != -1:
+                    continue                      # 只处理顶层，子对象随父级一起删
                 alias = sim.getObjectAlias(h, 0)
             except Exception:
                 continue
-            if alias.startswith(("dr12", "AGV_", "Cylinder")):
-                try:
-                    sim.removeObjects([h])
-                    removed += 1
-                except Exception:
-                    pass
+            if alias in KEEP:
+                continue
+            try:
+                sim.removeObjects([h])
+                removed += 1
+            except Exception:
+                pass
         if removed:
             print(f"  已清理场景中 {removed} 个旧对象")
+            time.sleep(0.5)
 
     # ---- 加载机器人 ----
     print(f"\n[3/4] 加载 {len(ROBOT_POSITIONS)} 台机器人 ...")
@@ -140,11 +149,13 @@ def main() -> int:
     for i, (x, y) in enumerate(ROBOT_POSITIONS, 1):
         try:
             h = sim.loadModel(model_path)
+            # 只设置位置，**不要**覆盖朝向：
+            # dr12 模型的原始姿态是 (0, -1.57, 0)（绕 Y 轴 -90° 才正立），
+            # 若把它设成 (0,0,0)，机器人会躺倒 —— 这是必须保留的部分。
             sim.setObjectPosition(h, -1, [x, y, 0.077])
-            # 注意：不要给模型改名。
-            # dr12 的内置脚本按原始对象名查找关节，改名后脚本会报错，
-            # 进而导致仿真在开始后不久被中止（表现为"机器人不动"）。
-            # 保留默认名 dr12，CoppeliaSim 会自动编号为 dr12[0]、dr12[1]…
+            ori = sim.getObjectOrientation(h, -1)
+            print(f"      模型原始朝向 ({ori[0]:+.2f},{ori[1]:+.2f},{ori[2]:+.2f})")
+            # 保留默认名 dr12，CoppeliaSim 自动编号为 dr12[0]、dr12[1]…
             robots.append(h)
             alias = sim.getObjectAlias(h, 1)
             print(f"  ✅ {alias}  位置 ({x:+.2f}, {y:+.2f})")
