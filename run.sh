@@ -68,6 +68,6 @@ case "$CMD" in
         echo "  sim      事件流仿真"
         echo
         echo "示例：./run.sh bridge --duration 60"
-        exit 1
+        exit 0
         ;;
 esac

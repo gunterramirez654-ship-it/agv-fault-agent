@@ -212,13 +212,20 @@ def check_coppelia() -> None:
             ver = sim.getInt32Param(sim.intparam_program_version)
             record("3D", f"ZMQ 握手成功（版本码 {ver}）", True)
 
-            # 检查默认机器人对象
-            try:
-                sim.getObject("/dr12[0]")
-                record("3D", "默认机器人 /dr12[0] 存在", True)
-            except Exception:
-                record("3D", "默认机器人 /dr12[0] 存在", False,
-                       "当前场景里没有 /dr12[0]，请用 --robot 指定实际对象名")
+            # 检查场景里是否有可跟踪的 AGV（兼容自建 AGV_xx 与旧 dr12）
+            found = []
+            for name in ("/AGV_01", "/AGV_02", "/AGV_03", "/dr12[0]"):
+                try:
+                    sim.getObject(name)
+                    found.append(name)
+                except Exception:
+                    pass
+            if found:
+                record("3D", f"场景内有可跟踪的 AGV（{', '.join(found[:3])}）", True)
+            else:
+                record("3D", "场景内有可跟踪的 AGV", False,
+                       "当前场景没有 AGV。运行 ./run.sh scene 生成演示场景，\n"
+                       "        或在 CoppeliaSim 里打开 scenes/agv_demo.ttt")
         except Exception as exc:  # noqa: BLE001
             record("3D", "ZMQ 握手", False, f"{type(exc).__name__}: {exc}")
 
