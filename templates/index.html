@@ -104,6 +104,28 @@
   }
   svg.floor { width: 100%; max-width: 420px; height: auto; display: block; }
 
+  /* 区域统计列表 */
+  .zone-stats {
+    flex-shrink: 0;
+    padding: 0 12px 12px;
+    display: grid; gap: 6px;
+  }
+  .zone-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 4px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    font-size: 11.5px;
+  }
+  .zone-row .dot2 {
+    width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0;
+  }
+  .zone-row .nm { color: var(--text); flex: 1; }
+  .zone-row .id { color: var(--muted); font-family: var(--mono); font-size: 10px; }
+  .zone-row .cnt {
+    color: var(--accent); font-family: var(--mono); font-weight: 600;
+  }
+  .zone-row.hit { border-color: var(--accent); background: rgba(88,166,255,.08); }
+
   .zone-rect {
     fill: var(--zone);
     stroke: var(--zone-line);
@@ -469,6 +491,9 @@
         </g>
       </svg>
     </div>
+
+    <!-- 区域统计：填充面板空白，也让观众知道每个区有多少历史案例 -->
+    <div class="zone-stats" id="zone-stats"></div>
   </section>
 
   <!-- ========== 右：分析面板 ========== -->
@@ -674,6 +699,10 @@ function clearZoneHighlight() {
 
 function highlightZone(areaId, riskLevel) {
   clearZoneHighlight();
+  // 左侧统计行同步高亮
+  document.querySelectorAll('.zone-row').forEach(el => el.classList.remove('hit'));
+  const zr = $('zr-' + areaId);
+  if (zr) zr.classList.add('hit');
   const gid = ZONE_ID[areaId];
   const cls = RISK_CLASS[riskLevel];
   if (!gid || !cls) return;
@@ -713,6 +742,28 @@ async function loadConfig() {
 
   $('stat-kb').textContent = CONFIG.kb_count;
   $('stat-dim').textContent = CONFIG.embedding_dim;
+
+  // 渲染区域统计
+  const ZONE_COLOR = {
+    region_RAN: '#58a6ff',
+    region_RAZ: '#3fb950',
+    region_RDA: '#d29922',
+    region_RAB: '#f85149',
+  };
+  const dist = CONFIG.area_distribution || {};
+  const zs = $('zone-stats');
+  if (zs) {
+    zs.innerHTML = Object.entries(ZONE_COLOR).map(([area, color]) => {
+      const label = (CONFIG.area_labels || {})[area] || area;
+      const cnt = dist[area] || 0;
+      return `<div class="zone-row" id="zr-${area}">
+        <span class="dot2" style="background:${color}"></span>
+        <span class="nm">${label}</span>
+        <span class="id">${area}</span>
+        <span class="cnt">${cnt} 条</span>
+      </div>`;
+    }).join('');
+  }
 
   renderEventBar(CONFIG.events);
 
