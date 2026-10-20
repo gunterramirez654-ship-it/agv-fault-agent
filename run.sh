@@ -38,6 +38,9 @@ case "$CMD" in
     doctor)
         exec "$PY" doctor.py "$@"
         ;;
+    verify)
+        exec "$PY" verify.py "$@"
+        ;;
     test)
         exec "$PY" test_vector_store.py "$@"
         ;;
@@ -58,8 +61,9 @@ case "$CMD" in
         exec "$PY" fleet_sim.py "$@"
         ;;
     *)
-        echo "用法：./run.sh {doctor|test|web|scene|bridge|sim} [参数...]"
+        echo "用法：./run.sh {verify|doctor|test|web|scene|bridge|sim} [参数...]"
         echo
+        echo "  verify   全功能验证（交付/演示前跑这个）"
         echo "  doctor   环境自检（出问题先跑这个）"
         echo "  test     命令行全链路测试"
         echo "  web      启动 2D 可视化服务  → http://127.0.0.1:8000"

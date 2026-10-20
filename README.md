@@ -288,11 +288,16 @@ cp .env.example .env
 ### 4. 运行
 
 ```bash
-./run.sh doctor     # 先做环境自检（8 类前置条件）
+./run.sh verify     # 全功能验证（24 项检查，交付/演示前跑这个）
+./run.sh web        # 2D 控制台界面 → http://127.0.0.1:8000
 ./run.sh test       # 命令行全链路测试
-./run.sh web        # 2D 可视化
-./run.sh sim        # 运营仿真
+./run.sh sim        # 运营仿真报告
+./run.sh doctor     # 环境自检（出问题时定位用）
 ```
+
+`verify` 会一次性验证 6 个层面：环境依赖、知识库与向量化、召回与决策、
+LLM 链路、Web 接口（含临时起服务实测）、3D 联动（可选）。
+必需项 24 项，全部通过才建议交付。
 
 ---
 
@@ -368,6 +373,7 @@ agv_embodied_project/
 ├── prepare_scene.py           # 程序化生成 3D 演示场景
 ├── scenes/agv_demo.ttt        # 生成的 3D 场景文件
 │
+├── verify.py                  # 全功能验证（24 项检查）
 ├── doctor.py                  # 环境自检（8 类前置条件）
 ├── run.sh                     # 统一启动入口
 │
