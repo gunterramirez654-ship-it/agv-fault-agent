@@ -62,6 +62,7 @@ import argparse
 import math
 import os
 import queue
+import random
 import re
 import sys
 import threading
@@ -103,6 +104,13 @@ DWELL_SECONDS = 4.0          # 到站停留时长：让观众看清结果，也�
 # 运动学移动参数
 LINEAR_SPEED = 0.55          # m/s（墙钟时间）
 ZONE_HIT_DIST = 0.38         # m：AGV 距区域中心多近算"进入该区域"
+
+# 自主导航参数
+TARGET_REACH_DIST = 0.22     # m：距目标多近算到达
+TARGET_JITTER = 0.25         # m：目标点随机偏移，让每次路线不同
+AGV_HALF_DIAG = 0.21         # m：AGV 半对角线（0.34×0.24 车身约 0.21）
+OBSTACLE_MARGIN = 0.12       # m：额外安全余量
+REPULSE_GAIN = 2.2           # 排斥力强度系数
 
 # 区域可视化
 ZONE_HALF = 2.45
@@ -372,111 +380,99 @@ def quat_from_z(angle: float) -> Tuple[float, float, float, float]:
     return (0.0, 0.0, math.sin(angle / 2.0), math.cos(angle / 2.0))
 
 
-def catmull_rom_closed(points: List[Tuple[float, float]],
-                       samples_per_seg: int = 60) -> List[Tuple[float, float]]:
-    """用 Catmull-Rom 样条把控制点连成闭合平滑曲线。
-
-    为什么用样条：
-        直接让 AGV 在航点之间走直线，转弯是"折线"，看起来一顿一顿的。
-        Catmull-Rom 保证曲线穿过每个控制点，且一二阶导连续 ——
-        航点处自然圆滑过渡，视觉上像车在打方向盘。
-
-    参数：
-        points          : 控制点（首尾自动闭合）
-        samples_per_seg : 每段采样数，越大越平滑
-
-    返回：
-        密集的点序列（闭合，首尾不重复）
-    """
-    n = len(points)
-    if n < 3:
-        return list(points)
-
-    out: List[Tuple[float, float]] = []
-    for i in range(n):
-        p0 = points[(i - 1) % n]
-        p1 = points[i]
-        p2 = points[(i + 1) % n]
-        p3 = points[(i + 2) % n]
-        for j in range(samples_per_seg):
-            t = j / samples_per_seg
-            t2, t3 = t * t, t * t * t
-            x = 0.5 * ((2 * p1[0]) +
-                       (-p0[0] + p2[0]) * t +
-                       (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
-                       (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
-            y = 0.5 * ((2 * p1[1]) +
-                       (-p0[1] + p2[1]) * t +
-                       (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
-                       (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
-            out.append((x, y))
+def read_obstacles(sim: Any) -> List[Tuple[float, float, float]]:
+    """读取场景中所有圆柱障碍物的 (x, y, 半径)。"""
+    out: List[Tuple[float, float, float]] = []
+    for h in sim.getObjectsInTree(sim.handle_scene):
+        try:
+            alias = sim.getObjectAlias(h, 1)
+            if "Cylinder" not in alias or sim.getObjectType(h) != 0:
+                continue
+            pos = sim.getObjectPosition(h, -1)
+            bb = sim.getShapeBB(h)
+            size = bb[0] if isinstance(bb, (tuple, list)) else bb
+            radius = float(size[0]) / 2.0
+            out.append((float(pos[0]), float(pos[1]), radius))
+        except Exception:  # noqa: BLE001
+            continue
     return out
 
 
-def build_path(points: List[Tuple[float, float]]) -> Dict[str, Any]:
-    """把控制点展开成带弧长索引的样条路径。"""
-    dense = catmull_rom_closed(points, samples_per_seg=80)
-    # 累计弧长
-    cum = [0.0]
-    for i in range(1, len(dense)):
-        dx = dense[i][0] - dense[i - 1][0]
-        dy = dense[i][1] - dense[i - 1][1]
-        cum.append(cum[-1] + math.hypot(dx, dy))
-    # 闭合段
-    dx = dense[0][0] - dense[-1][0]
-    dy = dense[0][1] - dense[-1][1]
-    total = cum[-1] + math.hypot(dx, dy)
-    return {"pts": dense, "cum": cum, "total": max(total, 1e-6)}
+def steer_autonomous(sim: Any, robot: Dict[str, Any],
+                     obstacles: List[Tuple[float, float, float]],
+                     dt: float, rng: Any) -> Tuple[float, float, bool]:
+    """自主导航一步：目标吸引 + 障碍排斥（人工势场法）。
 
+    为什么不用固定环线：
+        固定环线看起来像"沿着轨道画圈"，没有自主性。
+        这里让每台车自己挑一个目标点，边走边避开障碍物，
+        走法每次都不一样 —— 视觉上更像真的在派活。
 
-def sample_path(path: Dict[str, Any], s_arc: float
-                ) -> Tuple[float, float, float]:
-    """按弧长取点，返回 (x, y, 切线朝向)。"""
-    pts, cum, total = path["pts"], path["cum"], path["total"]
-    s_arc %= total
-
-    # 二分查找所在段
-    lo, hi = 0, len(cum) - 1
-    while lo < hi - 1:
-        mid = (lo + hi) // 2
-        if cum[mid] <= s_arc:
-            lo = mid
-        else:
-            hi = mid
-    i = lo
-    j = (i + 1) % len(pts)
-
-    seg_len = (cum[j] - cum[i]) if j > i else (total - cum[i] + cum[j])
-    t = (s_arc - cum[i]) / seg_len if seg_len > 1e-9 else 0.0
-    t = max(0.0, min(1.0, t))
-
-    x = pts[i][0] + (pts[j][0] - pts[i][0]) * t
-    y = pts[i][1] + (pts[j][1] - pts[i][1]) * t
-    heading = math.atan2(pts[j][1] - pts[i][1], pts[j][0] - pts[i][0])
-    return x, y, heading
-
-
-def advance_along_path(sim: Any, robot: Dict[str, Any], dt: float,
-                       speed: float) -> None:
-    """沿样条路径推进一小段，并把车头对齐到路径切线。"""
+    返回：
+        (当前位置 x, 当前 y, 是否到达目标)
+    """
     root = robot["root"]
-    s_arc = robot["arc"] + speed * dt
-    robot["arc"] = s_arc % robot["path"]["total"]
+    pos = sim.getObjectPosition(root, -1)
+    x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
 
-    x, y, heading = sample_path(robot["path"], robot["arc"])
+    target = robot.get("target")
+    if target is None:
+        target = pick_target(robot, rng)
+        robot["target"] = target
 
-    # 朝向做一阶平滑：直接取切线会有采样抖动，这里低通一下
+    tx, ty = target
+    dx, dy = tx - x, ty - y
+    dist = math.hypot(dx, dy)
+
+    # ---- 到达判定 ----
+    if dist < TARGET_REACH_DIST:
+        robot["target"] = None
+        return x, y, True
+
+    # ---- 吸引力（指向目标）----
+    fx, fy = dx / dist, dy / dist
+
+    # ---- 排斥力（远离附近障碍物）----
+    for ox, oy, orad in obstacles:
+        vx, vy = x - ox, y - oy
+        d = math.hypot(vx, vy)
+        safe = orad + AGV_HALF_DIAG + OBSTACLE_MARGIN
+        if d < safe and d > 1e-6:
+            # 越近排斥越强
+            strength = (safe - d) / safe * REPULSE_GAIN
+            fx += vx / d * strength
+            fy += vy / d * strength
+
+    n = math.hypot(fx, fy) or 1.0
+    fx, fy = fx / n, fy / n
+
+    heading = math.atan2(fy, fx)
+
+    # 朝向平滑
     prev = robot.get("yaw", heading)
     diff = wrap_angle(heading - prev)
-    yaw = wrap_angle(prev + diff * 0.6)
+    yaw = wrap_angle(prev + diff * 0.5)
     robot["yaw"] = yaw
 
+    step = min(LINEAR_SPEED * dt, dist)
     try:
-        pos = sim.getObjectPosition(root, -1)
-        sim.setObjectPosition(root, -1, [x, y, float(pos[2])])
+        sim.setObjectPosition(root, -1, [x + fx * step, y + fy * step, z])
         sim.setObjectOrientation(root, -1, [0.0, 0.0, yaw])
     except Exception:  # noqa: BLE001
         pass
+    return x, y, False
+
+
+def pick_target(robot: Dict[str, Any], rng: Any) -> Tuple[float, float]:
+    """挑一个目标点：优先去别的区域，避免原地打转。"""
+    cur = robot.get("last_zone")
+    candidates = [z for z in ZONES if z["area_id"] != cur] or ZONES
+    zone = rng.choice(candidates)
+    wx, wy = zone["waypoint"]
+    # 加一点随机偏移，让每次路线都不同
+    jitter = TARGET_JITTER
+    return (wx + rng.uniform(-jitter, jitter),
+            wy + rng.uniform(-jitter, jitter))
 
 
 def stop_wheels(sim: Any, left: Any, right: Any) -> None:
@@ -691,21 +687,21 @@ def main() -> int:
         print(f"  [warn] 启动仿真失败：{type(exc).__name__}: {exc}")
         print("         将继续以运动学方式移动物体")
 
-    # 为每台车构建样条路径；错开起始弧长，三台车分布在不同路段
-    control_points = [(z["waypoint"][0], z["waypoint"][1]) for z in ZONES]
-    shared_path = build_path(control_points)
-    print(f"  路径：{len(shared_path['pts'])} 个采样点，"
-          f"闭环弧长 {shared_path['total']:.2f} m")
+    # 读取障碍物几何，供避障使用
+    obstacles = read_obstacles(sim)
+    print(f"  障碍物：{len(obstacles)} 个")
+    for ox, oy, orad in obstacles:
+        print(f"     ({ox:+.2f}, {oy:+.2f})  半径 {orad:.2f}")
 
-    for i, r in enumerate(robots):
-        r["path"] = shared_path
-        r["arc"] = shared_path["total"] * (i / max(len(robots), 1))
+    rng = random.Random(42)
+    for r in robots:
         try:
             ori = sim.getObjectOrientation(r["root"], -1)
             r["yaw"] = float(ori[2])
         except Exception:  # noqa: BLE001
             r["yaw"] = 0.0
         r["last_zone"] = None
+        r["target"] = None
 
     # ---- 主循环 ----
     print("\n[5/5] 开始巡游 ...（Ctrl+C 退出）\n")
@@ -739,8 +735,9 @@ def main() -> int:
                     continue                     # 到站停留中
 
                 try:
-                    advance_along_path(sim, r, dt, LINEAR_SPEED)
-                    pos = sim.getObjectPosition(r["root"], -1)
+                    px_now, py_now, arrived = steer_autonomous(
+                        sim, r, obstacles, dt, rng)
+                    pos = (px_now, py_now)
                 except Exception as exc:  # noqa: BLE001
                     move_errors += 1
                     if move_errors <= 3:
@@ -751,6 +748,9 @@ def main() -> int:
                             move_errors = 0
                     time.sleep(0.2)
                     continue
+
+                if arrived:
+                    r["dwell_until"] = now + DWELL_SECONDS
 
                 # 判定是否靠近某个区域中心
                 px, py = float(pos[0]), float(pos[1])
