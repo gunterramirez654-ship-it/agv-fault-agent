@@ -101,10 +101,10 @@ DEFAULT_COOLDOWN = 3.0       # 两次分析之间的最小间隔
 DWELL_SECONDS = 4.0          # 到站停留时长：让观众看清结果，也让节奏不至于太赶
 
 # 运动学移动参数
-LINEAR_SPEED = 0.55          # m/s（墙钟时间；受轮询频率限制）
-WAYPOINT_TOLERANCE = 0.10    # m：距离小于此值视为到达
-WAYPOINT_TIMEOUT = 30.0      # s：单个航点最长行驶时间，防卡死。
-                             #    达到即原地触发分析，不再等待
+LINEAR_SPEED = 0.55          # m/s（墙钟时间）
+TURN_RATE = 3.2              # rad/s：最大角速度，决定转弯快慢
+HEADING_TOLERANCE = 0.30     # rad：朝向偏差小于此值才前进（先转弯再直行）
+WAYPOINT_TOLERANCE = 0.09    # m：距离小于此值视为到达
 
 # 区域可视化
 ZONE_HALF = 2.45
@@ -123,7 +123,8 @@ RISK_COLORS = {
 }
 IDLE_COLOR = [0.70, 0.70, 0.70]
 
-# 四个区域与各自的航点（区域内一点，离边界足够远，避免抖动）
+# 环线路点：按矩形顺序排列，相邻两点只差一个坐标轴 →
+# 路径全部沿边线（x=±1.55 或 y=±1.55），不穿越场地中央。
 ZONES: List[Dict[str, Any]] = [
     {"area_id": "region_RAN", "name": "装载区", "waypoint": (1.55, 1.55)},
     {"area_id": "region_RAZ", "name": "缓存区", "waypoint": (-1.55, 1.55)},
@@ -183,7 +184,7 @@ def find_all_robots(sim: Any, preferred: str) -> List[Dict[str, Any]]:
     """扫描场景中所有二轮差速机器人，返回描述列表。
 
     每项包含：root / alias / left / right / base_quat
-    base_quat 用于保持模型原始姿态（见 move_kinematic 的说明）。
+    base_quat 在启动时读取，仅用于记录原始姿态（自建车体不需要补偿）。
     """
     robots: List[Dict[str, Any]] = []
     seen = set()
@@ -211,9 +212,7 @@ def find_all_robots(sim: Any, preferred: str) -> List[Dict[str, Any]]:
                 "root": h,
                 "alias": alias,
                 "base_quat": tuple(sim.getObjectQuaternion(h, -1)),
-                "wp_index": 0,
                 "dwell_until": 0.0,
-                "dwell_mark": -1,
             })
         except Exception:  # noqa: BLE001
             continue
@@ -301,45 +300,61 @@ def quat_from_z(angle: float) -> Tuple[float, float, float, float]:
     return (0.0, 0.0, math.sin(angle / 2.0), math.cos(angle / 2.0))
 
 
-def move_kinematic(sim: Any, robot: Dict[str, Any],
-                   target: Tuple[float, float], speed: float, dt: float,
-                   yaw_offset: float) -> float:
-    """把 AGV 朝目标点推进一小步，返回剩余距离。
+def move_along_route(sim: Any, robot: Dict[str, Any],
+                     dt: float) -> Optional[Dict[str, Any]]:
+    """沿矩形环线朝下一个路点推进一小步，返回到达的路点信息（未到达返回 None）。
 
-    关于朝向（关键）：
-        dr12 模型的原始姿态是 (0, -1.57, 0)，即绕 Y 轴 -90° 才正立。
-        如果直接把朝向设成 (0, 0, yaw)，机器人会躺倒 —— 这正是
-        "小车倒立"问题的原因。
+    为什么走环线而不是直奔目标：
+        四个区域两两之间直线相连会穿过场地中央，
+        正好压到障碍物上，看起来像"撞过去"。
+        真实 AGV 走的是通道，所以这里把路点串成矩形环线，
+        只沿边线行驶（x=±1.55 或 y=±1.55），不穿越中央。
 
-        正确做法：保留模型原始姿态，再在其上叠加绕世界 Z 轴的偏航：
-            q_new = q_z(yaw) * q_base
-        用四元数相乘实现，既能转向又不会破坏"正立"。
-
-    为什么不用物理驱动：
-        本机环境下仿真时间推进不稳定（同样 2 秒有时只推进 0.0s），
-        且模型脚本会主动暂停仿真，物理驱动不可靠。
+    转弯处理：
+        朝向不是瞬间对齐，而是按最大角速度 TURN_RATE 逐步转过去；
+        且只有朝向基本对准后才前进 —— 视觉上就是"先转弯、再直行"。
     """
     root = robot["root"]
+    route = robot["route"]
+    idx = robot["route_index"] % len(route)
+    target, area_id, zone_name = route[idx]
+
     pos = sim.getObjectPosition(root, -1)
     x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
     dx, dy = target[0] - x, target[1] - y
     dist = math.hypot(dx, dy)
 
-    if dist < 1e-6:
-        return 0.0
-
-    yaw = math.atan2(dy, dx) + yaw_offset
+    # ---- 朝向：逐步转向目标 ----
+    desired = math.atan2(dy, dx) if dist > 1e-6 else robot.get("yaw", 0.0)
+    cur = float(robot.get("yaw", 0.0))
+    diff = wrap_angle(desired - cur)
+    max_step = TURN_RATE * dt
+    if abs(diff) > max_step:
+        cur = wrap_angle(cur + math.copysign(max_step, diff))
+    else:
+        cur = desired
+    robot["yaw"] = cur
     try:
-        q = quat_mul(quat_from_z(yaw), robot["base_quat"])
-        sim.setObjectQuaternion(root, -1, list(q))
+        sim.setObjectOrientation(root, -1, [0.0, 0.0, cur])
     except Exception:  # noqa: BLE001
         pass
 
-    step = min(speed * dt, dist)
-    sim.setObjectPosition(root, -1, [x + dx / dist * step,
-                                     y + dy / dist * step,
-                                     z])
-    return dist - step
+    # ---- 位置：朝向基本对准后才前进 ----
+    if abs(wrap_angle(desired - cur)) < HEADING_TOLERANCE and dist > 1e-6:
+        step = min(LINEAR_SPEED * dt, dist)
+        try:
+            sim.setObjectPosition(root, -1,
+                                  [x + dx / dist * step,
+                                   y + dy / dist * step, z])
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ---- 判定到达 ----
+    if dist < WAYPOINT_TOLERANCE:
+        robot["route_index"] = (idx + 1) % len(route)
+        return {"area_id": area_id, "name": zone_name,
+                "waypoint": target, "x": x, "y": y}
+    return None
 
 
 def stop_wheels(sim: Any, left: Any, right: Any) -> None:
@@ -419,13 +434,10 @@ def main() -> int:
     print(f"\n[2/5] 连接 CoppeliaSim {args.host}:{args.port} ...")
     try:
         client = RemoteAPIClient(host=args.host, port=args.port)
-        try:
-            import zmq
-            client.socket.setsockopt(zmq.RCVTIMEO, 15000)
-            client.socket.setsockopt(zmq.SNDTIMEO, 15000)
-            client.socket.setsockopt(zmq.LINGER, 0)
-        except Exception:  # noqa: BLE001
-            pass
+        # 不要给 REQ socket 设 RCVTIMEO：
+        # ZMQ 的 REQ 必须严格「发一次、收一次」。一旦某次 recv 超时，
+        # 那条未接收的回复会把 socket 留在非法状态，之后每次 send 都会报
+        # "Operation cannot be accomplished in current state"，整个连接报废。
         sim = client.require("sim")
     except Exception as exc:  # noqa: BLE001
         print(f"  [FATAL] 连接失败：{type(exc).__name__}: {exc}")
@@ -503,9 +515,16 @@ def main() -> int:
 
     print("\n[4/5] 准备就绪（运动学模式：直接设置位姿，不依赖物理引擎）")
 
-    # 各机器人错开起始航点，避免同时挤在一处
+    # 为每台车建立环线；错开起始路点，避免挤在一起
     for i, r in enumerate(robots):
-        r["wp_index"] = i % len(ZONES)
+        r["route"] = [((z["waypoint"][0], z["waypoint"][1]),
+                       z["area_id"], z["name"]) for z in ZONES]
+        r["route_index"] = i % len(ZONES)
+        try:
+            ori = sim.getObjectOrientation(r["root"], -1)
+            r["yaw"] = float(ori[2])
+        except Exception:  # noqa: BLE001
+            r["yaw"] = 0.0
 
     # ---- 主循环 ----
     print("\n[5/5] 开始巡游 ...（Ctrl+C 退出）\n")
@@ -515,10 +534,12 @@ def main() -> int:
 
     started_ts = time.time()
     busy = False
+    pending_zone: Optional[Dict[str, Any]] = None   # 分析进行中时的待触发区域
     last_trigger_ts = 0.0
     trigger_count = 0
     cursor: Dict[str, int] = {}
     restore_color_at: Optional[float] = None
+    move_errors = 0
     dt = 1.0 / POLL_HZ
 
     try:
@@ -530,52 +551,50 @@ def main() -> int:
                 print(f"  已达到设定时长 {args.duration:.0f}s，准备退出 ...")
                 break
 
-            # ---------- 驱动全部 AGV ----------
+            # ---------- 驱动全部 AGV（沿矩形环线）----------
+            arrived_zone: Optional[Dict[str, Any]] = None
             for r in robots:
                 if now < r["dwell_until"]:
                     continue                     # 到站停留中
-                zone = ZONES[r["wp_index"] % len(ZONES)]
                 try:
-                    remaining = move_kinematic(
-                        sim, r, zone["waypoint"], LINEAR_SPEED, dt,
-                        args.yaw_offset)
+                    arrived = move_along_route(sim, r, dt)
                 except Exception as exc:  # noqa: BLE001
-                    print(f"  [warn] 移动失败：{type(exc).__name__}: {exc}")
+                    move_errors += 1
+                    if move_errors <= 3:
+                        print(f"  [warn] 移动失败：{type(exc).__name__}: {exc}")
+                        if move_errors == 3:
+                            print("  [warn] 后续同类错误不再重复打印")
+                    time.sleep(0.2)
                     continue
+                if arrived:
+                    r["dwell_until"] = now + DWELL_SECONDS
+                    if r is primary:
+                        arrived_zone = arrived
 
-                if remaining < WAYPOINT_TOLERANCE:
-                    r["dwell_until"] = now + DWELL_SECONDS   # 到站停留
-                    r["wp_index"] += 1
+            # 分析还没结束时先记下到站区域，等空闲了再触发，避免丢失
+            if arrived_zone is not None:
+                pending_zone = arrived_zone
 
-            # ---------- 主 AGV 到站则触发分析 ----------
-            zone = ZONES[(primary["wp_index"] - 1) % len(ZONES)]
-            on_dwell = now < primary["dwell_until"]
-            if on_dwell and (not busy) and \
-                    (now - last_trigger_ts) >= args.cooldown and \
-                    primary.get("dwell_mark") != primary["wp_index"]:
-
-                primary["dwell_mark"] = primary["wp_index"]
-                try:
-                    pos = sim.getObjectPosition(primary["root"], -1)
-                    x, y = float(pos[0]), float(pos[1])
-                except Exception:  # noqa: BLE001
-                    x = y = 0.0
-
-                draw_zone_highlight(sim, overlay, zone["area_id"], "idle")
-                event = pick_event(zone["area_id"], cursor)
+            # ---------- 主 AGV 到站 → 触发该区域的分析 ----------
+            if pending_zone and (not busy) and \
+                    (now - last_trigger_ts) >= args.cooldown:
+                draw_zone_highlight(sim, overlay, pending_zone["area_id"], "idle")
+                event = pick_event(pending_zone["area_id"], cursor)
                 if event:
                     last_trigger_ts = now
                     busy = True
-                    print(f"  {elapsed:6.1f}s  ({x:7.3f},{y:7.3f})  "
-                          f"{zone['name']:<8}  → {event['label']}")
+                    print(f"  {elapsed:6.1f}s  ({pending_zone['x']:7.3f},"
+                          f"{pending_zone['y']:7.3f})  "
+                          f"{pending_zone['name']:<8}  → {event['label']}")
                     threading.Thread(
                         target=_analysis_worker,
                         args=({"query_text": event["query_text"],
-                               "area_id": zone["area_id"],
+                               "area_id": pending_zone["area_id"],
                                "label": event["label"],
-                               "area_name": zone["name"]},),
+                               "area_name": pending_zone["name"]},),
                         daemon=True,
                     ).start()
+                    pending_zone = None
 
             # ---------- 收取分析结果 ----------
             while True:
