@@ -225,6 +225,80 @@ def find_all_robots(sim: Any, preferred: str) -> List[Dict[str, Any]]:
     return robots
 
 
+def set_camera_lookat(sim: Any, cam: Any,
+                      eye: Tuple[float, float, float],
+                      target: Tuple[float, float, float]) -> None:
+    """把相机放到 eye，看向 target。
+
+    为什么需要：场景被程序化重建后，默认相机可能贴着地面，
+    视野里只剩地板，物体虽然存在却看不到 —— 表现为"3D 视口空白"。
+    每次启动时重新摆一次相机，保证全景可见。
+
+    实现：构造 look-at 旋转矩阵（相机沿 +Z 看），再转成四元数。
+    """
+    ex, ey, ez = eye
+    tx, ty, tz = target
+
+    # 视线方向（相机 +Z 轴）
+    zx, zy, zz = tx - ex, ty - ey, tz - ez
+    norm = math.sqrt(zx * zx + zy * zy + zz * zz) or 1.0
+    zx, zy, zz = zx / norm, zy / norm, zz / norm
+
+    # 世界向上 (0,0,1)；若视线几乎垂直，改用 (0,1,0) 避免退化
+    if abs(zz) > 0.999:
+        upx, upy, upz = 0.0, 1.0, 0.0
+    else:
+        upx, upy, upz = 0.0, 0.0, 1.0
+
+    # x = up × z
+    xx = upy * zz - upz * zy
+    xy = upz * zx - upx * zz
+    xz = upx * zy - upy * zx
+    n = math.sqrt(xx * xx + xy * xy + xz * xz) or 1.0
+    xx, xy, xz = xx / n, xy / n, xz / n
+
+    # y = z × x
+    yx = zy * xz - zz * xy
+    yy = zz * xx - zx * xz
+    yz = zx * xy - zy * xx
+
+    # 旋转矩阵 → 四元数
+    m00, m01, m02 = xx, yx, zx
+    m10, m11, m12 = xy, yy, zy
+    m20, m21, m22 = xz, yz, zz
+    trace = m00 + m11 + m22
+    if trace > 0:
+        s2 = math.sqrt(trace + 1.0) * 2
+        qw = 0.25 * s2
+        qx = (m21 - m12) / s2
+        qy = (m02 - m20) / s2
+        qz = (m10 - m01) / s2
+    elif m00 > m11 and m00 > m22:
+        s2 = math.sqrt(1.0 + m00 - m11 - m22) * 2
+        qw = (m21 - m12) / s2
+        qx = 0.25 * s2
+        qy = (m01 + m10) / s2
+        qz = (m02 + m20) / s2
+    elif m11 > m22:
+        s2 = math.sqrt(1.0 + m11 - m00 - m22) * 2
+        qw = (m02 - m20) / s2
+        qx = (m01 + m10) / s2
+        qy = 0.25 * s2
+        qz = (m12 + m21) / s2
+    else:
+        s2 = math.sqrt(1.0 + m22 - m00 - m11) * 2
+        qw = (m10 - m01) / s2
+        qx = (m02 + m20) / s2
+        qy = (m12 + m21) / s2
+        qz = 0.25 * s2
+
+    try:
+        sim.setObjectPosition(cam, -1, [ex, ey, ez])
+        sim.setObjectQuaternion(cam, -1, [qx, qy, qz, qw])
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def setup_zone_overlay(sim: Any) -> List[Any]:
     """在地面画出四个区域的边界与彩色高亮框。"""
     S, Z = ZONE_HALF, ZONE_LINE_Z
@@ -569,6 +643,29 @@ def main() -> int:
 
     overlay = setup_zone_overlay(sim)
     print("  ✅ 已绘制区域边界")
+
+    # 强制可见：把 AGV 及其部件设到默认可见层，防止被隐藏后"看不见"
+    try:
+        forced = 0
+        for r in robots:
+            for h in [r["root"]] + sim.getObjectsInTree(r["root"]):
+                try:
+                    sim.setObjectInt32Param(
+                        h, sim.objintparam_visibility_layer, 1)
+                    forced += 1
+                except Exception:  # noqa: BLE001
+                    pass
+        print(f"  ✅ 已强制 {forced} 个对象的可见层为 1")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [warn] 设置可见层失败：{type(exc).__name__}: {exc}")
+
+    # 摆正相机：保证能看到整个场地（否则可能只看到地板）
+    try:
+        cam = sim.getObject("/DefaultCamera")
+        set_camera_lookat(sim, cam, (4.2, -4.2, 4.6), (0.0, 0.0, 0.0))
+        print("  ✅ 已重置相机视角（俯视全场）")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [warn] 重置相机失败：{type(exc).__name__}: {exc}")
     print()
     print("     区域与航点（地面 5m × 5m）：")
     print("       ┌──────────────┬──────────────┐")
