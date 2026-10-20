@@ -102,9 +102,7 @@ DWELL_SECONDS = 4.0          # 到站停留时长：让观众看清结果，也�
 
 # 运动学移动参数
 LINEAR_SPEED = 0.55          # m/s（墙钟时间）
-TURN_RATE = 3.2              # rad/s：最大角速度，决定转弯快慢
-HEADING_TOLERANCE = 0.30     # rad：朝向偏差小于此值才前进（先转弯再直行）
-WAYPOINT_TOLERANCE = 0.09    # m：距离小于此值视为到达
+ZONE_HIT_DIST = 0.38         # m：AGV 距区域中心多近算"进入该区域"
 
 # 区域可视化
 ZONE_HALF = 2.45
@@ -300,61 +298,111 @@ def quat_from_z(angle: float) -> Tuple[float, float, float, float]:
     return (0.0, 0.0, math.sin(angle / 2.0), math.cos(angle / 2.0))
 
 
-def move_along_route(sim: Any, robot: Dict[str, Any],
-                     dt: float) -> Optional[Dict[str, Any]]:
-    """沿矩形环线朝下一个路点推进一小步，返回到达的路点信息（未到达返回 None）。
+def catmull_rom_closed(points: List[Tuple[float, float]],
+                       samples_per_seg: int = 60) -> List[Tuple[float, float]]:
+    """用 Catmull-Rom 样条把控制点连成闭合平滑曲线。
 
-    为什么走环线而不是直奔目标：
-        四个区域两两之间直线相连会穿过场地中央，
-        正好压到障碍物上，看起来像"撞过去"。
-        真实 AGV 走的是通道，所以这里把路点串成矩形环线，
-        只沿边线行驶（x=±1.55 或 y=±1.55），不穿越中央。
+    为什么用样条：
+        直接让 AGV 在航点之间走直线，转弯是"折线"，看起来一顿一顿的。
+        Catmull-Rom 保证曲线穿过每个控制点，且一二阶导连续 ——
+        航点处自然圆滑过渡，视觉上像车在打方向盘。
 
-    转弯处理：
-        朝向不是瞬间对齐，而是按最大角速度 TURN_RATE 逐步转过去；
-        且只有朝向基本对准后才前进 —— 视觉上就是"先转弯、再直行"。
+    参数：
+        points          : 控制点（首尾自动闭合）
+        samples_per_seg : 每段采样数，越大越平滑
+
+    返回：
+        密集的点序列（闭合，首尾不重复）
     """
+    n = len(points)
+    if n < 3:
+        return list(points)
+
+    out: List[Tuple[float, float]] = []
+    for i in range(n):
+        p0 = points[(i - 1) % n]
+        p1 = points[i]
+        p2 = points[(i + 1) % n]
+        p3 = points[(i + 2) % n]
+        for j in range(samples_per_seg):
+            t = j / samples_per_seg
+            t2, t3 = t * t, t * t * t
+            x = 0.5 * ((2 * p1[0]) +
+                       (-p0[0] + p2[0]) * t +
+                       (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+                       (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
+            y = 0.5 * ((2 * p1[1]) +
+                       (-p0[1] + p2[1]) * t +
+                       (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+                       (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+            out.append((x, y))
+    return out
+
+
+def build_path(points: List[Tuple[float, float]]) -> Dict[str, Any]:
+    """把控制点展开成带弧长索引的样条路径。"""
+    dense = catmull_rom_closed(points, samples_per_seg=80)
+    # 累计弧长
+    cum = [0.0]
+    for i in range(1, len(dense)):
+        dx = dense[i][0] - dense[i - 1][0]
+        dy = dense[i][1] - dense[i - 1][1]
+        cum.append(cum[-1] + math.hypot(dx, dy))
+    # 闭合段
+    dx = dense[0][0] - dense[-1][0]
+    dy = dense[0][1] - dense[-1][1]
+    total = cum[-1] + math.hypot(dx, dy)
+    return {"pts": dense, "cum": cum, "total": max(total, 1e-6)}
+
+
+def sample_path(path: Dict[str, Any], s_arc: float
+                ) -> Tuple[float, float, float]:
+    """按弧长取点，返回 (x, y, 切线朝向)。"""
+    pts, cum, total = path["pts"], path["cum"], path["total"]
+    s_arc %= total
+
+    # 二分查找所在段
+    lo, hi = 0, len(cum) - 1
+    while lo < hi - 1:
+        mid = (lo + hi) // 2
+        if cum[mid] <= s_arc:
+            lo = mid
+        else:
+            hi = mid
+    i = lo
+    j = (i + 1) % len(pts)
+
+    seg_len = (cum[j] - cum[i]) if j > i else (total - cum[i] + cum[j])
+    t = (s_arc - cum[i]) / seg_len if seg_len > 1e-9 else 0.0
+    t = max(0.0, min(1.0, t))
+
+    x = pts[i][0] + (pts[j][0] - pts[i][0]) * t
+    y = pts[i][1] + (pts[j][1] - pts[i][1]) * t
+    heading = math.atan2(pts[j][1] - pts[i][1], pts[j][0] - pts[i][0])
+    return x, y, heading
+
+
+def advance_along_path(sim: Any, robot: Dict[str, Any], dt: float,
+                       speed: float) -> None:
+    """沿样条路径推进一小段，并把车头对齐到路径切线。"""
     root = robot["root"]
-    route = robot["route"]
-    idx = robot["route_index"] % len(route)
-    target, area_id, zone_name = route[idx]
+    s_arc = robot["arc"] + speed * dt
+    robot["arc"] = s_arc % robot["path"]["total"]
 
-    pos = sim.getObjectPosition(root, -1)
-    x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
-    dx, dy = target[0] - x, target[1] - y
-    dist = math.hypot(dx, dy)
+    x, y, heading = sample_path(robot["path"], robot["arc"])
 
-    # ---- 朝向：逐步转向目标 ----
-    desired = math.atan2(dy, dx) if dist > 1e-6 else robot.get("yaw", 0.0)
-    cur = float(robot.get("yaw", 0.0))
-    diff = wrap_angle(desired - cur)
-    max_step = TURN_RATE * dt
-    if abs(diff) > max_step:
-        cur = wrap_angle(cur + math.copysign(max_step, diff))
-    else:
-        cur = desired
-    robot["yaw"] = cur
+    # 朝向做一阶平滑：直接取切线会有采样抖动，这里低通一下
+    prev = robot.get("yaw", heading)
+    diff = wrap_angle(heading - prev)
+    yaw = wrap_angle(prev + diff * 0.6)
+    robot["yaw"] = yaw
+
     try:
-        sim.setObjectOrientation(root, -1, [0.0, 0.0, cur])
+        pos = sim.getObjectPosition(root, -1)
+        sim.setObjectPosition(root, -1, [x, y, float(pos[2])])
+        sim.setObjectOrientation(root, -1, [0.0, 0.0, yaw])
     except Exception:  # noqa: BLE001
         pass
-
-    # ---- 位置：朝向基本对准后才前进 ----
-    if abs(wrap_angle(desired - cur)) < HEADING_TOLERANCE and dist > 1e-6:
-        step = min(LINEAR_SPEED * dt, dist)
-        try:
-            sim.setObjectPosition(root, -1,
-                                  [x + dx / dist * step,
-                                   y + dy / dist * step, z])
-        except Exception:  # noqa: BLE001
-            pass
-
-    # ---- 判定到达 ----
-    if dist < WAYPOINT_TOLERANCE:
-        robot["route_index"] = (idx + 1) % len(route)
-        return {"area_id": area_id, "name": zone_name,
-                "waypoint": target, "x": x, "y": y}
-    return None
 
 
 def stop_wheels(sim: Any, left: Any, right: Any) -> None:
@@ -481,6 +529,24 @@ def main() -> int:
             print(f"  [FATAL] 自动加载场景失败：{type(exc).__name__}: {exc}")
             return 1
 
+    # ---- 自动重连 ----
+    # 本环境的 ZMQ 连接偶尔会进入坏状态，REQ socket 报
+    # "Operation cannot be accomplished in current state"。
+    # 对象句柄由服务端维护，重连后依旧有效，因此重建连接即可继续。
+    def reconnect() -> bool:
+        nonlocal sim, client
+        try:
+            try:
+                client.socket.close(0)
+            except Exception:  # noqa: BLE001
+                pass
+            client = RemoteAPIClient(host=args.host, port=args.port)
+            sim = client.require("sim")
+            return True
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [warn] 重连失败：{type(exc).__name__}: {exc}")
+            return False
+
     primary = robots[0]
     print(f"  ✅ 场景内 {len(robots)} 台 AGV：")
     for r in robots:
@@ -528,16 +594,21 @@ def main() -> int:
         print(f"  [warn] 启动仿真失败：{type(exc).__name__}: {exc}")
         print("         将继续以运动学方式移动物体")
 
-    # 为每台车建立环线；错开起始路点，避免挤在一起
+    # 为每台车构建样条路径；错开起始弧长，三台车分布在不同路段
+    control_points = [(z["waypoint"][0], z["waypoint"][1]) for z in ZONES]
+    shared_path = build_path(control_points)
+    print(f"  路径：{len(shared_path['pts'])} 个采样点，"
+          f"闭环弧长 {shared_path['total']:.2f} m")
+
     for i, r in enumerate(robots):
-        r["route"] = [((z["waypoint"][0], z["waypoint"][1]),
-                       z["area_id"], z["name"]) for z in ZONES]
-        r["route_index"] = i % len(ZONES)
+        r["path"] = shared_path
+        r["arc"] = shared_path["total"] * (i / max(len(robots), 1))
         try:
             ori = sim.getObjectOrientation(r["root"], -1)
             r["yaw"] = float(ori[2])
         except Exception:  # noqa: BLE001
             r["yaw"] = 0.0
+        r["last_zone"] = None
 
     # ---- 主循环 ----
     print("\n[5/5] 开始巡游 ...（Ctrl+C 退出）\n")
@@ -564,29 +635,46 @@ def main() -> int:
                 print(f"  已达到设定时长 {args.duration:.0f}s，准备退出 ...")
                 break
 
-            # ---------- 驱动全部 AGV（沿矩形环线）----------
-            arrived_zone: Optional[Dict[str, Any]] = None
+            # ---------- 驱动全部 AGV（沿样条路径）----------
+            hit_zone: Optional[Dict[str, Any]] = None
             for r in robots:
                 if now < r["dwell_until"]:
                     continue                     # 到站停留中
+
                 try:
-                    arrived = move_along_route(sim, r, dt)
+                    advance_along_path(sim, r, dt, LINEAR_SPEED)
+                    pos = sim.getObjectPosition(r["root"], -1)
                 except Exception as exc:  # noqa: BLE001
                     move_errors += 1
                     if move_errors <= 3:
                         print(f"  [warn] 移动失败：{type(exc).__name__}: {exc}")
-                        if move_errors == 3:
-                            print("  [warn] 后续同类错误不再重复打印")
+                    if "current state" in str(exc) or "ZMQ" in type(exc).__name__:
+                        if reconnect():
+                            print("  [info] 已重连 CoppeliaSim，继续")
+                            move_errors = 0
                     time.sleep(0.2)
                     continue
-                if arrived:
-                    r["dwell_until"] = now + DWELL_SECONDS
-                    if r is primary:
-                        arrived_zone = arrived
 
-            # 分析还没结束时先记下到站区域，等空闲了再触发，避免丢失
-            if arrived_zone is not None:
-                pending_zone = arrived_zone
+                # 判定是否靠近某个区域中心
+                px, py = float(pos[0]), float(pos[1])
+                for z in ZONES:
+                    if math.hypot(z["waypoint"][0] - px,
+                                  z["waypoint"][1] - py) < ZONE_HIT_DIST:
+                        if r["last_zone"] != z["area_id"]:
+                            r["last_zone"] = z["area_id"]
+                            if r is primary:
+                                hit_zone = {"area_id": z["area_id"],
+                                            "name": z["name"],
+                                            "x": px, "y": py}
+                                r["dwell_until"] = now + DWELL_SECONDS
+                        break
+                else:
+                    # 离开所有区域 → 允许下次再触发
+                    r["last_zone"] = None
+
+            # 分析还没结束时先记下，等空闲了再触发
+            if hit_zone is not None:
+                pending_zone = hit_zone
 
             # ---------- 主 AGV 到站 → 触发该区域的分析 ----------
             if pending_zone and (not busy) and \
@@ -623,6 +711,10 @@ def main() -> int:
                 if res.get("ok"):
                     risk = res["risk_level"]
                     action = res["action"]
+                    try:
+                        sim.getSimulationState()      # 探活
+                    except Exception:  # noqa: BLE001
+                        reconnect()
                     harness = res.get("harness", {})
                     first_line = (res.get("report") or "").strip().split("\n")[0][:60]
 
