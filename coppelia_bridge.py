@@ -513,7 +513,20 @@ def main() -> int:
     print("       │ (-1.55,-1.55)│ ( 1.55,-1.55)│")
     print("       └──────────────┴──────────────┘")
 
-    print("\n[4/5] 准备就绪（运动学模式：直接设置位姿，不依赖物理引擎）")
+    print("\n[4/5] 启动仿真（让视图持续刷新）")
+    # 为什么会启动仿真：CoppeliaSim 在"仿真停止"状态下不一定持续重绘视图，
+    # 只靠 setObjectPosition 改位置，画面可能停在初始状态不动。
+    # 现在车体是自建图元、没有任何脚本，启动仿真不会像 dr12 那样被脚本暂停。
+    try:
+        if sim.getSimulationState() != 0:
+            sim.stopSimulation()
+            time.sleep(0.5)
+        sim.startSimulation()
+        time.sleep(0.3)
+        print(f"  ✅ 仿真已启动（状态 {sim.getSimulationState()}）")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [warn] 启动仿真失败：{type(exc).__name__}: {exc}")
+        print("         将继续以运动学方式移动物体")
 
     # 为每台车建立环线；错开起始路点，避免挤在一起
     for i, r in enumerate(robots):
@@ -655,6 +668,7 @@ def main() -> int:
         print("\n\n[exit] 收到 Ctrl+C，正在停止 ...")
     finally:
         for step, fn in (
+            ("停止仿真", lambda: sim.stopSimulation()),
             ("恢复颜色", lambda: sim.setShapeColor(
                 body, None, sim.colorcomponent_ambient_diffuse,
                 make_color(original_color))),
