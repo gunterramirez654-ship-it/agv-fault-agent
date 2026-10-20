@@ -15,7 +15,7 @@ verify.py —— 全功能验证
     6. 3D 联动（可选，CoppeliaSim 未启动时只提示）
 
 运行：
-    cd /Users/bobo/Desktop/agv_embodied_project
+    cd agv_embodied_project
     ./run.sh verify
 """
 

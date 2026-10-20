@@ -8,7 +8,7 @@ doctor.py —— 环境自检工具
 出现任何报错时，先跑这个脚本，比逐条猜要快得多。
 
 用法：
-    cd /Users/bobo/Desktop/agv_embodied_project
+    cd agv_embodied_project
     ./venv/bin/python doctor.py
 
 检查项分三档：
@@ -83,7 +83,7 @@ def check_cwd() -> None:
     cwd = os.getcwd()
     has_kb = os.path.isfile("knowledge_base.json")
     record("核心", f"当前目录：{cwd}", has_kb,
-           "请在项目根目录运行：cd /Users/bobo/Desktop/agv_embodied_project")
+           "请在项目根目录运行：cd agv_embodied_project")
 
 
 def check_packages() -> None:

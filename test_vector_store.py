@@ -33,7 +33,7 @@ test_vector_store.py —— AGV 巡检小车：全链路业务入口与联调测
     【阶段3】区域优先 vs 全局召回 A/B 对照：量化跨区污染率下降与语义代价
 
 运行方式：
-    cd /Users/bobo/Desktop/agv_embodied_project
+    cd agv_embodied_project
     ./venv/bin/python test_vector_store.py
 
 前置条件：

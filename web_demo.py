@@ -38,7 +38,7 @@ web_demo.py —— AGV 故障分析可视化演示服务（V1 POC）
 
 运行
 ----------------------------------------------------------------------------
-    cd /Users/bobo/Desktop/agv_embodied_project
+    cd agv_embodied_project
     ./venv/bin/python web_demo.py
     浏览器打开 http://127.0.0.1:8000
 
