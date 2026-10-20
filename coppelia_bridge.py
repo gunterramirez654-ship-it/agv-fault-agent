@@ -62,6 +62,7 @@ import argparse
 import math
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -189,37 +190,37 @@ def find_all_robots(sim: Any, preferred: str) -> List[Dict[str, Any]]:
 
     for h in sim.getObjectsInTree(sim.handle_scene):
         try:
-            kids = sim.getObjectsInTree(h)
-            joints = [k for k in kids if sim.getObjectType(k) == 1]
-            if len(joints) != 2:
+            alias = sim.getObjectAlias(h, 1)
+            short = alias.lstrip("/")
+            # 只认 AGV_01 / AGV_02 这种根节点名字。
+            # 注意不能用 startswith 判断：子部件的别名是 AGV_01_body、
+            # AGV_01_nose 这类，startswith 会把它们也当成车去驱动，
+            # 结果整车被拆散着乱动。
+            if not re.fullmatch(r"AGV_\d+", short):
                 continue
-            left = right = None
-            for k in joints:
-                a = sim.getObjectAlias(k, 1).lower()
-                if "left" in a:
-                    left = k
-                elif "right" in a:
-                    right = k
-            if left is None or right is None:
+            # 根节点必须是 shape（车身）或 dummy；子部件名字带下划线，已被正则排除
+            try:
+                if sim.getObjectType(h) not in (0, 2):
+                    continue
+            except Exception:  # noqa: BLE001
                 continue
             if h in seen:
                 continue
             seen.add(h)
             robots.append({
                 "root": h,
-                "alias": sim.getObjectAlias(h, 1),
-                "left": left,
-                "right": right,
+                "alias": alias,
                 "base_quat": tuple(sim.getObjectQuaternion(h, -1)),
                 "wp_index": 0,
                 "dwell_until": 0.0,
+                "dwell_mark": -1,
             })
         except Exception:  # noqa: BLE001
             continue
 
     if not robots:
         raise RuntimeError(
-            "场景中找不到二轮差速机器人（需要 2 个含 left/right 的旋转关节）。\n"
+            "场景中找不到 AGV（对象名需以 AGV_ 开头）。\n"
             "          可运行 ./run.sh scene 重新生成演示场景。")
 
     # 把用户指定的那台排到最前（它负责触发分析）
@@ -401,9 +402,9 @@ def main() -> int:
                         help=f"两次分析最小间隔（默认 {DEFAULT_COOLDOWN}s）")
     parser.add_argument("--host", default=ZMQ_HOST)
     parser.add_argument("--port", type=int, default=ZMQ_PORT)
-    parser.add_argument("--yaw-offset", type=float, default=math.pi,
-                        help="车头朝向补偿（弧度）。dr12 模型 forward 轴与世界 +x 相反，"
-                             "默认 pi；若发现车头朝反方向，改成 0")
+    parser.add_argument("--yaw-offset", type=float, default=0.0,
+                        help="车头朝向补偿（弧度）。自建车体车头朝局部 +X，默认 0；"
+                             "若发现车头方向反了，可设为 3.14159")
     args = parser.parse_args()
 
     print("=" * 78)

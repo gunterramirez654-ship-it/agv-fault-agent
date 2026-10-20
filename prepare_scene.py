@@ -30,10 +30,11 @@ CoppeliaSim 自带的场景里没有现成的"多台 AGV + 障碍物"布局，�
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 try:
     from coppeliasim_zmqremoteapi_client import RemoteAPIClient
@@ -76,6 +77,78 @@ APP_CANDIDATES = [
 ]
 
 SCENE_OUT = os.path.join("scenes", "agv_demo.ttt")
+
+
+def build_simple_agv(sim: Any, name: str, x: float, y: float,
+                     yaw: float = 0.0) -> Any:
+    """用基本图元搭一台朝向明确的 AGV。
+
+    为什么不直接用 dr12 模型：
+        dr12 是接近方盒的车体，外观上分不出车头；它原本靠自带的 Lua 脚本
+        按内部约定前进，而我们把脚本禁用了，于是看起来"侧着跑、倒着跑"。
+
+        自建车体的好处是朝向完全由我们定义：
+            局部 +X = 车头方向
+        桥接器只要把 yaw 设成行进方向即可，不再需要猜 yaw 偏移。
+
+    结构：
+        AGV_xx            dummy 根节点（只用于定位与转向）
+        ├── body          车身（蓝色长方体）
+        ├── nose          车头标记（黄色小块，明确指示前进方向）
+        ├── tail          车尾标记（深色小块，进一步区分前后）
+        └── wheel0..3     四个轮子（圆柱）
+    """
+    # 用车身本身当根节点（不用 dummy）。
+    # 原因：本环境里 sim.createDummy() 返回的对象类型是 4(light) 而非 2(dummy)，
+    #      按类型过滤会全部落空。用 shape 作根节点最稳妥。
+    root = sim.createPrimitiveShape(sim.primitiveshape_cuboid,
+                                    [0.34, 0.24, 0.12], 0)
+    sim.setObjectAlias(root, name)
+    sim.setObjectPosition(root, -1, [x, y, 0.11])
+    sim.setObjectOrientation(root, -1, [0.0, 0.0, yaw])
+    try:
+        sim.setShapeColor(root, None, sim.colorcomponent_ambient_diffuse,
+                          [0.22, 0.52, 0.82, 1.0])
+    except Exception:
+        pass
+
+    def _part(alias: str, size: List[float], local: List[float],
+              color: List[float], ori: List[float] | None = None) -> Any:
+        h = sim.createPrimitiveShape(sim.primitiveshape_cuboid, size, 0)
+        sim.setObjectAlias(h, f"{name}/{alias}")
+        sim.setObjectParent(h, root, True)
+        sim.setObjectPosition(h, root, local)
+        if ori is not None:
+            sim.setObjectOrientation(h, root, ori)
+        try:
+            sim.setShapeColor(h, None, sim.colorcomponent_ambient_diffuse, color)
+        except Exception:
+            pass
+        return h
+
+    # 车头（+X 方向，黄色，醒目）
+    _part("nose", [0.07, 0.16, 0.09], [0.19, 0.0, 0.01],
+          [1.00, 0.78, 0.15, 1.0])
+    # 车尾（-X 方向，深灰）
+    _part("tail", [0.05, 0.16, 0.07], [-0.18, 0.0, 0.01],
+          [0.30, 0.32, 0.36, 1.0])
+
+    # 四个轮子（圆柱，绕 Z 轴转 90° 卧倒）
+    for i, (wx, wy) in enumerate(((0.11, 0.13), (0.11, -0.13),
+                                  (-0.11, 0.13), (-0.11, -0.13))):
+        w = sim.createPrimitiveShape(sim.primitiveshape_cylinder,
+                                     [0.065, 0.065, 0.045], 0)
+        sim.setObjectAlias(w, f"{name}/wheel{i}")
+        sim.setObjectParent(w, root, True)
+        sim.setObjectPosition(w, root, [wx, wy, -0.06])
+        sim.setObjectOrientation(w, root, [math.pi / 2.0, 0.0, 0.0])
+        try:
+            sim.setShapeColor(w, None, sim.colorcomponent_ambient_diffuse,
+                              [0.15, 0.15, 0.17, 1.0])
+        except Exception:
+            pass
+
+    return root
 
 
 def find_model_path() -> str:
@@ -143,24 +216,17 @@ def main() -> int:
             print(f"  已清理场景中 {removed} 个旧对象")
             time.sleep(0.5)
 
-    # ---- 加载机器人 ----
-    print(f"\n[3/4] 加载 {len(ROBOT_POSITIONS)} 台机器人 ...")
-    robots: List[int] = []
+    # ---- 创建 AGV（自建方块车，朝向明确）----
+    print(f"\n[3/4] 创建 {len(ROBOT_POSITIONS)} 台 AGV ...")
+    robots: List[Any] = []
     for i, (x, y) in enumerate(ROBOT_POSITIONS, 1):
         try:
-            h = sim.loadModel(model_path)
-            # 只设置位置，**不要**覆盖朝向：
-            # dr12 模型的原始姿态是 (0, -1.57, 0)（绕 Y 轴 -90° 才正立），
-            # 若把它设成 (0,0,0)，机器人会躺倒 —— 这是必须保留的部分。
-            sim.setObjectPosition(h, -1, [x, y, 0.077])
-            ori = sim.getObjectOrientation(h, -1)
-            print(f"      模型原始朝向 ({ori[0]:+.2f},{ori[1]:+.2f},{ori[2]:+.2f})")
-            # 保留默认名 dr12，CoppeliaSim 自动编号为 dr12[0]、dr12[1]…
+            h = build_simple_agv(sim, f"AGV_{i:02d}", x, y, yaw=0.0)
             robots.append(h)
-            alias = sim.getObjectAlias(h, 1)
-            print(f"  ✅ {alias}  位置 ({x:+.2f}, {y:+.2f})")
+            print(f"  ✅ AGV_{i:02d}  位置 ({x:+.2f}, {y:+.2f})  "
+                  f"车头朝 +X")
         except Exception as exc:  # noqa: BLE001
-            print(f"  ❌ 第 {i} 台加载失败：{type(exc).__name__}: {exc}")
+            print(f"  ❌ 第 {i} 台创建失败：{type(exc).__name__}: {exc}")
 
     # ---- 创建障碍物 ----
     print(f"\n[4/4] 创建 {len(OBSTACLES)} 个圆柱障碍物 ...")
