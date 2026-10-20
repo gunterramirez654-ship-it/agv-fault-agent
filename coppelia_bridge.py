@@ -672,17 +672,20 @@ def main() -> int:
     print("       │ (-1.55,-1.55)│ ( 1.55,-1.55)│")
     print("       └──────────────┴──────────────┘")
 
-    print("\n[4/5] 启动仿真（让视图持续刷新）")
-    # 为什么会启动仿真：CoppeliaSim 在"仿真停止"状态下不一定持续重绘视图，
-    # 只靠 setObjectPosition 改位置，画面可能停在初始状态不动。
-    # 现在车体是自建图元、没有任何脚本，启动仿真不会像 dr12 那样被脚本暂停。
+    print("\n[4/5] 启动仿真（步进模式：每次循环强制推进一帧，确保画面重绘）")
+    # 为什么用步进模式：
+    #   在自由运行模式下，本环境的视图刷新不可靠 —— 物体位置在变，
+    #   但画面可能十几秒不重绘（疑似 macOS 对后台/隐藏窗口的降频）。
+    #   显式 setStepping(True) + 每个控制周期 step() 一次，
+    #   让仿真推进一步并触发重绘，把刷新节奏绑到我们的控制循环上。
     try:
         if sim.getSimulationState() != 0:
             sim.stopSimulation()
             time.sleep(0.5)
+        sim.setStepping(True)
         sim.startSimulation()
         time.sleep(0.3)
-        print(f"  ✅ 仿真已启动（状态 {sim.getSimulationState()}）")
+        print(f"  ✅ 仿真已启动（步进模式，状态 {sim.getSimulationState()}）")
     except Exception as exc:  # noqa: BLE001
         print(f"  [warn] 启动仿真失败：{type(exc).__name__}: {exc}")
         print("         将继续以运动学方式移动物体")
@@ -851,6 +854,12 @@ def main() -> int:
                     pass
                 restore_color_at = None
 
+            # 强制推进一帧，确保画面重绘
+            try:
+                sim.step()
+            except Exception:  # noqa: BLE001
+                pass
+
             time.sleep(dt)
 
     except KeyboardInterrupt:
@@ -858,6 +867,7 @@ def main() -> int:
     finally:
         for step, fn in (
             ("停止仿真", lambda: sim.stopSimulation()),
+            ("恢复自由运行", lambda: sim.setStepping(False)),
             ("恢复颜色", lambda: sim.setShapeColor(
                 body, None, sim.colorcomponent_ambient_diffuse,
                 make_color(original_color))),
