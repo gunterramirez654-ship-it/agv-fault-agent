@@ -49,6 +49,7 @@ web_demo.py —— AGV 故障分析可视化演示服务（V1 POC）
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import threading
@@ -66,6 +67,19 @@ except ImportError as exc:  # pragma: no cover
     print(f"[FATAL] 项目模块导入失败：{exc}")
     print("        请确认在 agv_embodied_project 目录下运行本脚本。")
     raise SystemExit(1)
+
+
+# --------------------------------------------------------------------------- #
+# 运营仿真模块（可选：缺 simpy 时页签会提示未安装）
+# --------------------------------------------------------------------------- #
+try:
+    from fleet_sim import run_simulation, run_what_if
+    _SIM_OK = True
+except Exception as _sim_exc:  # noqa: BLE001
+    _SIM_OK = False
+    _SIM_ERR = f"{type(_sim_exc).__name__}: {_sim_exc}"
+    run_simulation = None       # type: ignore[assignment]
+    run_what_if = None          # type: ignore[assignment]
 
 
 # --------------------------------------------------------------------------- #
@@ -405,6 +419,8 @@ class DemoHandler(BaseHTTPRequestHandler):
             self._handle_retrieve()
         elif self.path == "/api/analyze":
             self._handle_analyze()
+        elif self.path == "/api/simulate":
+            self._handle_simulate()
         else:
             self._send_json({"ok": False, "error": "not found"}, status=404)
 
@@ -480,6 +496,67 @@ class DemoHandler(BaseHTTPRequestHandler):
             self._send_json(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=500
             )
+
+
+    def _handle_simulate(self) -> None:
+        """运营仿真接口：跑 SimPy 模型，返回指标 + what-if 对比。
+
+        纯计算，不调用 LLM，通常几十毫秒到几百毫秒返回。
+        """
+        if not _SIM_OK:
+            self._send_json({
+                "ok": False,
+                "error": f"运营仿真不可用（缺少依赖）：{_SIM_ERR}",
+            }, status=500)
+            return
+
+        data = self._read_json()
+        try:
+            hours = float(data.get("hours", 24))
+            agvs = int(data.get("agvs", 8))
+            chargers = int(data.get("chargers", 2))
+            fault_rate = float(data.get("fault_rate", 0.25))
+            seed = int(data.get("seed", 42))
+        except (TypeError, ValueError):
+            self._send_json({"ok": False, "error": "参数格式错误"}, status=400)
+            return
+
+        # 参数边界保护，避免误输入把服务卡死
+        hours = max(1.0, min(hours, 168.0))
+        agvs = max(1, min(agvs, 40))
+        chargers = max(1, min(chargers, 20))
+        fault_rate = max(0.0, min(fault_rate, 2.0))
+
+        try:
+            sim = run_simulation(hours=hours, agv_count=agvs,
+                                 charger_count=chargers,
+                                 fault_rate_per_agv_hour=fault_rate,
+                                 seed=seed)
+            compare = run_what_if(hours=hours, agvs=agvs,
+                                  charger_options=[1, 2, 3],
+                                  fault_rate=fault_rate, seed=seed)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                status=500)
+            return
+
+        # 事件按小时分桶，供前端画时间线
+        buckets = [0] * int(math.ceil(hours))
+        for e in sim["events"]:
+            idx = min(int(e["time_h"]), len(buckets) - 1)
+            if idx >= 0:
+                buckets[idx] += 1
+
+        self._send_json({
+            "ok": True,
+            "config": sim["config"],
+            "ops": sim["ops"],
+            "faults": sim["faults"],
+            "events_per_hour": buckets,
+            "what_if": compare,
+            "area_labels": AREA_LABELS,
+        })
 
 
 # --------------------------------------------------------------------------- #

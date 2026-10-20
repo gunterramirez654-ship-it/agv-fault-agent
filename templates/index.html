@@ -274,6 +274,90 @@
   .metric .v.warn { color: var(--mid); }
   .metric .v.bad  { color: var(--high); }
 
+  /* ===================== 页签 ===================== */
+  .tabs { display: flex; gap: 2px; margin-left: 18px; }
+  .tab {
+    padding: 5px 14px; font-size: 12px; cursor: pointer;
+    color: var(--muted); border: 1px solid transparent;
+    border-bottom: 2px solid transparent; background: none;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active {
+    color: var(--accent); border-bottom-color: var(--accent);
+    background: rgba(88,166,255,.06);
+  }
+
+  /* ===================== 仿真面板 ===================== */
+  #tab-sim {
+    flex: 1; display: flex; flex-direction: column;
+    gap: 12px; padding: 12px; overflow-y: auto; min-height: 0;
+  }
+  .sim-toolbar {
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 12px 14px;
+  }
+  .sim-field { display: flex; flex-direction: column; gap: 4px; }
+  .sim-field label { font-size: 10.5px; color: var(--muted); }
+  .sim-field input {
+    width: 84px; padding: 5px 8px; font-family: var(--mono); font-size: 12.5px;
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+  }
+  .sim-field input:focus { outline: none; border-color: var(--accent); }
+  .sim-run {
+    padding: 7px 18px; font-size: 12.5px; cursor: pointer;
+    background: rgba(88,166,255,.12); color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 4px;
+  }
+  .sim-run:hover { background: rgba(88,166,255,.2); }
+  .sim-run:disabled { opacity: .45; cursor: not-allowed; }
+
+  .kpi-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+  }
+  .kpi {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 5px; padding: 10px 12px;
+  }
+  .kpi .k { font-size: 10.5px; color: var(--muted); letter-spacing: .3px; }
+  .kpi .v {
+    font-family: var(--mono); font-size: 20px; color: var(--text);
+    margin-top: 4px; line-height: 1.1;
+  }
+  .kpi .u { font-size: 11px; color: var(--muted); margin-left: 3px; }
+  .kpi .v.good { color: var(--low); }
+  .kpi .v.warn { color: var(--mid); }
+  .kpi .v.bad  { color: var(--high); }
+
+  .chart-wrap {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px 12px 6px;
+  }
+  .chart-wrap svg { width: 100%; display: block; }
+
+  /* what-if 表 */
+  .wi-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .wi-table th {
+    text-align: right; padding: 6px 10px; font-weight: 500;
+    color: var(--muted); font-size: 10.5px;
+    border-bottom: 1px solid var(--border);
+  }
+  .wi-table th:first-child, .wi-table td:first-child { text-align: left; }
+  .wi-table td {
+    padding: 7px 10px; text-align: right;
+    font-family: var(--mono); border-bottom: 1px solid rgba(31,38,48,.6);
+  }
+  .wi-table tr.recommend { background: rgba(63,185,80,.08); }
+  .wi-table tr.recommend td:first-child { color: var(--low); font-weight: 600; }
+  .bar-cell { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+  .bar-track {
+    width: 90px; height: 6px; background: var(--panel-2);
+    border-radius: 3px; overflow: hidden;
+  }
+  .bar-fill { height: 100%; border-radius: 3px; }
+
   /* ===================== 日志流 ===================== */
   .log-panel {
     margin: 12px;
@@ -304,6 +388,12 @@
     <span class="tag">V1 POC</span>
     <span class="tag">区域优先召回 · LLM 辅助解读</span>
   </div>
+  <div class="tabs">
+    <button class="tab active" id="tab-btn-analysis"
+            onclick="switchTab('analysis')">实时分析</button>
+    <button class="tab" id="tab-btn-sim"
+            onclick="switchTab('sim')">运营仿真</button>
+  </div>
   <div class="stats">
     <span><span class="dot"></span>服务在线</span>
     <span>知识库 <b id="stat-kb">-</b> 条</span>
@@ -311,6 +401,7 @@
   </div>
 </header>
 
+<div id="tab-analysis" style="display:flex;flex-direction:column;flex:1;min-height:0">
 <main>
   <!-- ========== 左：工厂俯视图 ========== -->
   <section class="panel">
@@ -428,6 +519,52 @@
 
 <!-- ========== 事件横条（全宽，按区域分组） ========== -->
 <div class="event-strip" id="event-bar"></div>
+</div><!-- /tab-analysis -->
+
+<!-- ========== 运营仿真页签 ========== -->
+<div id="tab-sim" style="display:none">
+  <div class="sim-toolbar">
+    <div class="sim-field">
+      <label>仿真时长 (小时)</label>
+      <input id="sim-hours" type="number" value="24" min="1" max="168">
+    </div>
+    <div class="sim-field">
+      <label>AGV 数量</label>
+      <input id="sim-agvs" type="number" value="8" min="1" max="40">
+    </div>
+    <div class="sim-field">
+      <label>充电桩数量</label>
+      <input id="sim-chargers" type="number" value="2" min="1" max="20">
+    </div>
+    <div class="sim-field">
+      <label>故障率 (次/台·小时)</label>
+      <input id="sim-rate" type="number" value="0.25" step="0.05" min="0" max="2">
+    </div>
+    <div class="sim-field">
+      <label>随机种子</label>
+      <input id="sim-seed" type="number" value="42" min="0">
+    </div>
+    <button class="sim-run" id="sim-run-btn" onclick="runSimulation()">运行仿真</button>
+    <span id="sim-status" style="font-size:11.5px;color:var(--muted)"></span>
+  </div>
+
+  <div class="kpi-grid" id="sim-kpis"></div>
+
+  <div class="chart-wrap">
+    <div class="panel-head" style="border:none;padding:0 0 8px">
+      故障事件时间分布（每小时）
+    </div>
+    <svg id="sim-timeline" viewBox="0 0 800 160" preserveAspectRatio="none"
+         style="height:150px"></svg>
+  </div>
+
+  <div class="chart-wrap">
+    <div class="panel-head" style="border:none;padding:0 0 8px">
+      What-if 对比：充电桩数量对运营的影响
+    </div>
+    <div id="sim-whatif"></div>
+  </div>
+</div>
 
 <!-- ========== 底部日志 ========== -->
 <div class="log-panel">
@@ -872,6 +1009,149 @@ async function onEventClick(evt, btn) {
 function finishBusy() {
   BUSY = false;
   document.querySelectorAll('.evt-btn').forEach(b => (b.disabled = false));
+}
+
+// ============================================================
+// 页签：实时分析 / 运营仿真
+// ============================================================
+let SIM_DATA = null;
+
+function switchTab(name) {
+  const isSim = (name === 'sim');
+  $('tab-analysis').style.display = isSim ? 'none' : 'flex';
+  $('tab-sim').style.display = isSim ? 'flex' : 'none';
+  $('tab-btn-analysis').classList.toggle('active', !isSim);
+  $('tab-btn-sim').classList.toggle('active', isSim);
+  if (isSim && !SIM_DATA) runSimulation();
+}
+
+async function runSimulation() {
+  const btn = $('sim-run-btn');
+  const st = $('sim-status');
+  btn.disabled = true;
+  st.textContent = '计算中 ...';
+  try {
+    const res = await fetch('/api/simulate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        hours: +$('sim-hours').value,
+        agvs: +$('sim-agvs').value,
+        chargers: +$('sim-chargers').value,
+        fault_rate: +$('sim-rate').value,
+        seed: +$('sim-seed').value,
+      }),
+    });
+    const d = await res.json();
+    if (!d.ok) throw new Error(d.error || '仿真失败');
+    SIM_DATA = d;
+    renderSim(d);
+    st.textContent = `完成：${d.faults.total} 起事件`;
+    addLog(`运营仿真完成：完成任务 ${d.ops.tasks_done} 个，故障 ${d.faults.total} 起`, 'ok');
+  } catch (e) {
+    st.textContent = '失败：' + e.message;
+    addLog('运营仿真失败：' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderSim(d) {
+  const o = d.ops, f = d.faults;
+
+  // ---------- KPI ----------
+  const cu = o.charger_utilization;
+  const kpis = [
+    ['完成任务', o.tasks_done, '个', ''],
+    ['平均任务周期', (o.avg_task_cycle_s / 60).toFixed(1), '分', ''],
+    ['AGV 利用率', (o.agv_utilization * 100).toFixed(1), '%',
+      o.agv_utilization > 0.92 ? 'warn' : 'good'],
+    ['充电桩利用率', (cu * 100).toFixed(1), '%',
+      cu > 0.85 ? 'bad' : (cu > 0.70 ? 'warn' : 'good')],
+    ['平均充电等待', (o.avg_charger_wait_s / 60).toFixed(1), '分',
+      o.avg_charger_wait_s > 900 ? 'bad' : ''],
+    ['最长充电等待', (o.max_charger_wait_s / 60).toFixed(1), '分', ''],
+    ['故障事件', f.total, '起', ''],
+    ['故障率', f.per_hour.toFixed(2), '起/时', ''],
+  ];
+  $('sim-kpis').innerHTML = kpis.map(([k, v, u, cls]) => `
+    <div class="kpi">
+      <div class="k">${k}</div>
+      <div class="v ${cls}">${v}<span class="u">${u}</span></div>
+    </div>`).join('');
+
+  // ---------- 时间线柱状图 ----------
+  const data = d.events_per_hour || [];
+  const svg = $('sim-timeline');
+  const W = 800, H = 160, padL = 34, padB = 20, padT = 8;
+  const n = data.length || 1;
+  const maxV = Math.max(1, ...data);
+  const bw = (W - padL - 8) / n;
+
+  let bars = '';
+  data.forEach((v, i) => {
+    const h = (v / maxV) * (H - padB - padT);
+    const x = padL + i * bw;
+    const y = H - padB - h;
+    bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}"
+             width="${Math.max(1, bw - 1.5).toFixed(1)}" height="${h.toFixed(1)}"
+             fill="#58a6ff" opacity="${0.35 + 0.55 * (v / maxV)}"/>`;
+    if (v > 0) {
+      bars += `<text x="${(x + bw / 2).toFixed(1)}" y="${(y - 3).toFixed(1)}"
+               fill="#7d8590" font-size="9" text-anchor="middle">${v}</text>`;
+    }
+  });
+  // 网格与坐标轴
+  let grid = '';
+  for (let g = 0; g <= maxV; g += Math.ceil(maxV / 4)) {
+    const y = H - padB - (g / maxV) * (H - padB - padT);
+    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - 8}" y2="${y.toFixed(1)}"
+             stroke="#1f2630" stroke-width="1"/>`;
+    grid += `<text x="${padL - 6}" y="${(y + 3).toFixed(1)}" fill="#7d8590"
+             font-size="9" text-anchor="end">${g}</text>`;
+  }
+  let axis = `<line x1="${padL}" y1="${H - padB}" x2="${W - 8}" y2="${H - padB}"
+              stroke="#2a3340"/>`;
+  for (let i = 0; i < n; i += Math.max(1, Math.round(n / 12))) {
+    axis += `<text x="${(padL + i * bw + bw / 2).toFixed(1)}" y="${H - 6}"
+             fill="#7d8590" font-size="9" text-anchor="middle">${i}</text>`;
+  }
+  svg.innerHTML = grid + bars + axis;
+
+  // ---------- What-if 表 ----------
+  const rows = d.what_if || [];
+  // 拐点：边际吞吐增益首次低于 1%
+  let knee = rows.length ? rows[0].chargers : 2;
+  for (let i = 1; i < rows.length; i++) {
+    const prev = rows[i - 1], cur = rows[i];
+    const gain = prev.tasks_done ? (cur.tasks_done - prev.tasks_done) / prev.tasks_done : 0;
+    if (gain >= 0.01) knee = cur.chargers; else break;
+  }
+
+  const head = `<tr>
+      <th>充电桩</th><th>完成任务</th><th>利用率</th>
+      <th>平均排队</th><th>最长排队</th><th>边际吞吐</th></tr>`;
+  const body = rows.map((r, i) => {
+    const prev = i > 0 ? rows[i - 1] : null;
+    const gain = prev && prev.tasks_done
+      ? ((r.tasks_done - prev.tasks_done) / prev.tasks_done * 100) : null;
+    const u = r.charger_utilization * 100;
+    const color = u > 85 ? '#f85149' : (u > 70 ? '#d29922' : '#3fb950');
+    return `<tr class="${r.chargers === knee ? 'recommend' : ''}">
+      <td>${r.chargers} 个${r.chargers === knee ? ' ★推荐' : ''}</td>
+      <td>${r.tasks_done}</td>
+      <td><div class="bar-cell">
+        <div class="bar-track"><div class="bar-fill"
+          style="width:${Math.min(100, u).toFixed(0)}%;background:${color}"></div></div>
+        <span>${u.toFixed(1)}%</span></div></td>
+      <td>${(r.avg_wait_s / 60).toFixed(1)} 分</td>
+      <td>${(r.max_wait_s / 60).toFixed(1)} 分</td>
+      <td>${gain === null ? '—' : (gain >= 0 ? '+' : '') + gain.toFixed(1) + '%'}</td>
+    </tr>`;
+  }).join('');
+
+  $('sim-whatif').innerHTML =
+    `<table class="wi-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
 }
 
 // ============================================================
