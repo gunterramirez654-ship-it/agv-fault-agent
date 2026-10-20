@@ -544,8 +544,11 @@
       <label>随机种子</label>
       <input id="sim-seed" type="number" value="42" min="0">
     </div>
-    <button class="sim-run" id="sim-run-btn" onclick="runSimulation()">运行仿真</button>
-    <span id="sim-status" style="font-size:11.5px;color:var(--muted)"></span>
+    <button class="sim-run" id="sim-run-btn" type="button">运行仿真</button>
+    <span id="sim-status" style="font-size:11.5px;color:var(--muted)">点「运行仿真」计算</span>
+    <span style="font-size:11px;color:var(--muted);opacity:.75">
+      提示：参数不变时结果相同（确定性模型），改参数或种子才会变
+    </span>
   </div>
 
   <div class="kpi-grid" id="sim-kpis"></div>
@@ -1028,8 +1031,12 @@ function switchTab(name) {
 async function runSimulation() {
   const btn = $('sim-run-btn');
   const st = $('sim-status');
+  const t0 = performance.now();
+
   btn.disabled = true;
-  st.textContent = '计算中 ...';
+  btn.textContent = '计算中…';
+  st.textContent = '正在运行仿真 ...';
+
   try {
     const res = await fetch('/api/simulate', {
       method: 'POST',
@@ -1046,13 +1053,34 @@ async function runSimulation() {
     if (!d.ok) throw new Error(d.error || '仿真失败');
     SIM_DATA = d;
     renderSim(d);
-    st.textContent = `完成：${d.faults.total} 起事件`;
-    addLog(`运营仿真完成：完成任务 ${d.ops.tasks_done} 个，故障 ${d.faults.total} 起`, 'ok');
+
+    const ms = Math.round(performance.now() - t0);
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const ss = String(now.getSeconds()).padStart(2, '0');
+    st.textContent =
+      `✅ 完成于 ${hh}:${mm}:${ss}（${ms} ms）· ` +
+      `${d.ops.tasks_done} 任务 / ${d.faults.total} 事件 · ` +
+      `种子 ${d.config.seed}`;
+    st.style.color = 'var(--low)';
+    addLog(`运营仿真完成：完成任务 ${d.ops.tasks_done} 个，故障 ${d.faults.total} 起，耗时 ${ms} ms`, 'ok');
+
+    // 数据更新时闪一下，让人明确看到"变了"
+    const grid = $('sim-kpis');
+    grid.style.transition = 'none';
+    grid.style.opacity = '0.35';
+    requestAnimationFrame(() => {
+      grid.style.transition = 'opacity .35s ease';
+      grid.style.opacity = '1';
+    });
   } catch (e) {
-    st.textContent = '失败：' + e.message;
+    st.textContent = '❌ 失败：' + e.message;
+    st.style.color = 'var(--high)';
     addLog('运营仿真失败：' + e.message, 'err');
   } finally {
     btn.disabled = false;
+    btn.textContent = '运行仿真';
   }
 }
 
@@ -1160,6 +1188,24 @@ function renderSim(d) {
 window.addEventListener('DOMContentLoaded', async () => {
   initStepLabels();
   initPatrol();
+
+  // 绑定仿真按钮（不用内联 onclick，避免作用域问题）
+  const simBtn = $('sim-run-btn');
+  if (simBtn) {
+    simBtn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      runSimulation();
+    });
+  }
+
+  // 脚本出错时直接显示在页面上，不用开控制台
+  window.addEventListener('error', (ev) => {
+    const el = $('sim-status');
+    if (el) {
+      el.textContent = '脚本错误：' + (ev.message || '未知');
+      el.style.color = 'var(--high)';
+    }
+  });
   try {
     await loadConfig();
   } catch (err) {
