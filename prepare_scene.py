@@ -125,7 +125,7 @@ def main() -> int:
                 alias = sim.getObjectAlias(h, 0)
             except Exception:
                 continue
-            if alias.startswith("dr12") or alias.startswith("Cylinder"):
+            if alias.startswith(("dr12", "AGV_", "Cylinder")):
                 try:
                     sim.removeObjects([h])
                     removed += 1
@@ -141,9 +141,13 @@ def main() -> int:
         try:
             h = sim.loadModel(model_path)
             sim.setObjectPosition(h, -1, [x, y, 0.077])
-            sim.setObjectAlias(h, f"AGV_{i:02d}")
+            # 注意：不要给模型改名。
+            # dr12 的内置脚本按原始对象名查找关节，改名后脚本会报错，
+            # 进而导致仿真在开始后不久被中止（表现为"机器人不动"）。
+            # 保留默认名 dr12，CoppeliaSim 会自动编号为 dr12[0]、dr12[1]…
             robots.append(h)
-            print(f"  ✅ AGV_{i:02d}  位置 ({x:+.2f}, {y:+.2f})")
+            alias = sim.getObjectAlias(h, 1)
+            print(f"  ✅ {alias}  位置 ({x:+.2f}, {y:+.2f})")
         except Exception as exc:  # noqa: BLE001
             print(f"  ❌ 第 {i} 台加载失败：{type(exc).__name__}: {exc}")
 
